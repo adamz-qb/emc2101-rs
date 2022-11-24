@@ -140,9 +140,12 @@ where
         let reg = reg.into();
         let mut buf = [0x00];
         self.i2c.write_read(self.address, &[reg], &mut buf).map_err(Error::I2c)?;
+        let current = buf[0];
         buf[0] |= mask_set;
         buf[0] &= !mask_clear;
-        self.i2c.write(self.address, &[reg, buf[0]]).map_err(Error::I2c)?;
+        if current != buf[0] {
+            self.i2c.write(self.address, &[reg, buf[0]]).map_err(Error::I2c)?;
+        }
         Ok(())
     }
 
