@@ -63,20 +63,14 @@ where
     /// This consumes the I2C bus `I`. Before you can get temperature and fan measurements,
     /// you must call the `init` method which calibrates the sensor. The address will almost always
     /// be `SENSOR_ADDRESS` from this crate.
-    pub fn new(i2c: I, address: u8) -> Self {
-        EMC2101 { i2c, address }
-    }
-
-    /// Run the EMC2101 init routine.
-    pub fn init(&mut self) -> Result<(), Error<E>> {
-        self.check_id()?;
-        self.enable_tach_input()?;
-        self.set_fan_pwm(1400)?;
-        self.set_fan_power(100)
+    pub fn new(i2c: I, address: u8) -> Result<Self, Error<E>> {
+        let mut emc2101 = EMC2101 { i2c, address };
+        emc2101.check_id()?;
+        Ok(emc2101)
     }
 
     /// check_id asks the EMC2101 sensor to report its Product ID.
-    pub fn check_id(&mut self) -> Result<ProductID, Error<E>> {
+    fn check_id(&mut self) -> Result<ProductID, Error<E>> {
         let product_id_byte = self.read_reg(Register::ProductID)?;
         if product_id_byte == ProductID::EMC2101 as u8 {
             return Ok(ProductID::EMC2101);
@@ -88,24 +82,25 @@ where
         Err(Error::InvalidID)
     }
 
-    /// enable_tach_input enable using the TACH/ALERT pin as an input to read the fan speed
-    /// signal from a 4-pin fan.
-    pub fn enable_tach_input(&mut self) -> Result<(), Error<E>> {
-        // Clear Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as open drain,
-        // active low interrupt.
+    /// enable_tach_input configure ALERT#/TACH pin as high impedance TACH input.
+    /// This may require an external pull-up resistor to set the proper signaling levels.
+    pub fn enable_tach_input(&mut self) -> Result<&mut Self, Error<E>> {
+        // Set Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as high impedance TACH input.
         self.update_reg(Register::Configuration, 0b0000_0100, 0)?;
-        Ok(())
+        Ok(self)
     }
 
-    pub fn enable_alert_input(&mut self) -> Result<(), Error<E>> {
+    /// enable_alert_input configure ALERT#/TACH pin as open drain active low ALERT# interrupt.
+    pub fn enable_alert_input(&mut self) -> Result<&mut Self, Error<E>> {
         // Clear Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as open drain,
         // active low interrupt.
         self.update_reg(Register::Configuration, 0, 0b0000_0100)?;
-        Ok(())
+        Ok(self)
     }
 
-    pub fn set_fan_pwm(&mut self, freq: u32) -> Result<(), Error<E>> {
-        match freq {
+    /// set_fan_pwm set FAN in PWM mode and configure it's base frequency.
+    pub fn set_fan_pwm(&mut self, freq_hz: u32) -> Result<&mut Self, Error<E>> {
+        match freq_hz {
             1_400 => {
                 // Set FanConfig[3] CLK_SEL : The base clock that is used to determine the PWM
                 // frequency is 1.4kHz.
@@ -126,7 +121,7 @@ where
                 self.update_reg(Register::FanConfig, 0b0000_0010, 0b0000_1000)?;
                 // The PWM frequency when the PWMFrequencyDivide Register is used is shown in equation :
                 // PWM_D = (360k / (2 * PWM_F * FREQ))
-                let div: u16 = (160_000u32 / freq) as u16;
+                let div: u16 = (160_000u32 / freq_hz) as u16;
                 let pwm_f: u8 = (div >> 8) as u8 & 0x1F;
                 let pwm_d: u8 = (div & 0xFF) as u8;
                 // The PWMFrequency Register determines the final PWM frequency and "effective resolution"
@@ -142,17 +137,20 @@ where
                 return Err(Error::InvalidValue);
             }
         }
-        // Clear Configuration[4] DAC : PWM output enabled at FAN pin
+        // Clear Configuration[4] DAC : PWM output enabled at FAN pin.
         self.update_reg(Register::Configuration, 0, 0b0001_0000)?;
-        Ok(())
+        Ok(self)
     }
 
-    pub fn set_fan_dac(&mut self) -> Result<(), Error<E>> {
-        // Set Configuration[4] DAC : DAC output enabled at FAN pin
-        self.update_reg(Register::Configuration, 0b0001_0000, 0)
+    /// set_fan_dac set FAN in DAC mode.
+    pub fn set_fan_dac(&mut self) -> Result<&mut Self, Error<E>> {
+        // Set Configuration[4] DAC : DAC output enabled at FAN pin.
+        self.update_reg(Register::Configuration, 0b0001_0000, 0)?;
+        Ok(self)
     }
 
-    pub fn set_fan_power(&mut self, percent: u8) -> Result<(), Error<E>> {
+    /// set_fan_power set the FAN power in percent (for both modes PWM/DAC).
+    pub fn set_fan_power(&mut self, percent: u8) -> Result<&mut Self, Error<E>> {
         if percent > 100 {
             defmt::error!("Invalid Fan Power.");
             return Err(Error::InvalidValue);
@@ -160,9 +158,11 @@ where
         let val: u8 = (percent * 64 / 100) as u8;
         // The FanSetting Register drives the fan driver when the Fan Control Look-Up Table is not used.
         // Any data written to the FanSetting register is applied immediately to the fan driver (PWM or DAC).
-        self.write_reg(Register::FanSetting, val)
+        self.write_reg(Register::FanSetting, val)?;
+        Ok(self)
     }
 
+    /// write_reg blindly write a single register with a fixed value.
     fn write_reg<R: Into<u8>>(&mut self, reg: R, value: u8) -> Result<(), Error<E>> {
         self.i2c
             .write(self.address, &[reg.into(), value])
@@ -170,6 +170,8 @@ where
         Ok(())
     }
 
+    /// update_reg first read the register value, apply a set mask, then a clear mask, and write the new value
+    /// only if different from the initial value.
     fn update_reg<R: Into<u8>>(
         &mut self,
         reg: R,
@@ -192,6 +194,7 @@ where
         Ok(())
     }
 
+    /// read_reg read a register value.
     fn read_reg<R: Into<u8>>(&mut self, reg: R) -> Result<u8, Error<E>> {
         let mut buf = [0x00];
         self.i2c
@@ -200,7 +203,7 @@ where
         Ok(buf[0])
     }
 
-    /// Destroys this driver and releases the I2C bus `I`
+    /// Destroys this driver and releases the I2C bus `I`.
     pub fn destroy(self) -> Self {
         self
     }
@@ -218,30 +221,17 @@ mod tests {
     /// measures of success for this driver.
     #[test]
     fn emc2101_new() {
-        // In the real app we'd used shared-bus to share the i2c bus between the two drivers, but
-        // I think this is fine for a test.
-        let mock_i2c_1 = I2cMock::new(&[]);
-        let mock_i2c_2 = I2cMock::new(&[]);
-
-        let _emc2101_1 = EMC2101::new(mock_i2c_1, SENSOR_ADDRESS);
-        let _emc2101_2 = EMC2101::new(mock_i2c_2, SENSOR_ADDRESS);
-    }
-
-    /// Test reading the Product ID Register.
-    #[test]
-    fn check_id() {
         let expectations = vec![Transaction::write_read(
             SENSOR_ADDRESS,
             vec![super::Register::ProductID as u8],
             vec![super::ProductID::EMC2101 as u8],
         )];
-        let mock_i2c = I2cMock::new(&expectations);
+        // In the real app we'd used shared-bus to share the i2c bus between the two drivers, but
+        // I think this is fine for a test.
+        let mock_i2c_1 = I2cMock::new(&expectations);
+        let mock_i2c_2 = I2cMock::new(&expectations);
 
-        let mut emc2101 = EMC2101::new(mock_i2c, SENSOR_ADDRESS);
-        let dev_id = emc2101.check_id().unwrap();
-        assert_eq!(dev_id as u8, super::ProductID::EMC2101 as u8);
-
-        let mut mock = emc2101.destroy().i2c;
-        mock.done(); // verify expectations
+        let _emc2101_1 = EMC2101::new(mock_i2c_1, SENSOR_ADDRESS).unwrap();
+        let _emc2101_2 = EMC2101::new(mock_i2c_2, SENSOR_ADDRESS).unwrap();
     }
 }
