@@ -316,26 +316,50 @@ where
     }
 
     /// set_fan_pwm set FAN in PWM mode and configure it's base frequency.
-    pub fn set_fan_pwm(&mut self, freq_hz: u32) -> Result<&mut Self, Error<E>> {
+    pub fn set_fan_pwm(&mut self, freq_hz: u32, inverted: bool) -> Result<&mut Self, Error<E>> {
         match freq_hz {
             1_400 => {
                 // Set FanConfig[3] CLK_SEL : The base clock that is used to determine the PWM
                 // frequency is 1.4kHz.
                 // Clear FanConfig[2] CLK_OVR : The base clock frequency is determined by the
                 // CLK_SEL bit.
-                self.update_reg(Register::FanConfig, 0b0000_1000, 0b0000_0100)?;
+                if inverted {
+                    // Set FanConfig[4] POLARITY : The polarity of the Fan output driver is inverted.
+                    // A 0x00 setting will correspond to a 100% duty cycle or maximum DAC output voltage.
+                    self.update_reg(Register::FanConfig, 0b0001_1000, 0b0000_0100)?;
+                } else {
+                    // Clear FanConfig[4] POLARITY : The polarity of the Fan output driver is non-inverted.
+                    // A 0x00 setting will correspond to a 0% duty cycle or minimum DAC output voltage.
+                    self.update_reg(Register::FanConfig, 0b0000_1000, 0b0001_0100)?;
+                }
             }
             360_000 => {
                 // Clear FanConfig[3] CLK_SEL : The base clock that is used to determine the PWM
                 // frequency is 360kHz.
                 // Clear FanConfig[2] CLK_OVR : The base clock frequency is determined by the
                 // CLK_SEL bit.
-                self.update_reg(Register::FanConfig, 0, 0b0000_1100)?;
+                if inverted {
+                    // Set FanConfig[4] POLARITY : The polarity of the Fan output driver is inverted.
+                    // A 0x00 setting will correspond to a 100% duty cycle or maximum DAC output voltage.
+                    self.update_reg(Register::FanConfig, 0b0001_0000, 0b0000_1100)?;
+                } else {
+                    // Clear FanConfig[4] POLARITY : The polarity of the Fan output driver is non-inverted.
+                    // A 0x00 setting will correspond to a 0% duty cycle or minimum DAC output voltage.
+                    self.update_reg(Register::FanConfig, 0, 0b0001_1100)?;
+                }
             }
             23..=160_000 => {
                 // Set FanConfig[2] CLK_OVR : The base clock that is used to determine the PWM frequency
                 // is set by the Frequency Divide Register.
-                self.update_reg(Register::FanConfig, 0b0000_0010, 0b0000_1000)?;
+                if inverted {
+                    // Set FanConfig[4] POLARITY : The polarity of the Fan output driver is inverted.
+                    // A 0x00 setting will correspond to a 100% duty cycle or maximum DAC output voltage.
+                    self.update_reg(Register::FanConfig, 0b0001_0010, 0b0000_1000)?;
+                } else {
+                    // Clear FanConfig[4] POLARITY : The polarity of the Fan output driver is non-inverted.
+                    // A 0x00 setting will correspond to a 0% duty cycle or minimum DAC output voltage.
+                    self.update_reg(Register::FanConfig, 0b0000_0010, 0b0001_1000)?;
+                }
                 // The PWM frequency when the PWMFrequencyDivide Register is used is shown in equation :
                 // PWM_D = (360k / (2 * PWM_F * FREQ))
                 let div: u16 = (160_000u32 / freq_hz) as u16;
@@ -360,9 +384,18 @@ where
     }
 
     /// set_fan_dac set FAN in DAC mode.
-    pub fn set_fan_dac(&mut self) -> Result<&mut Self, Error<E>> {
+    pub fn set_fan_dac(&mut self, inverted: bool) -> Result<&mut Self, Error<E>> {
         // Set Configuration[4] DAC : DAC output enabled at FAN pin.
         self.update_reg(Register::Configuration, 0b0001_0000, 0)?;
+        if inverted {
+            // Set FanConfig[4] POLARITY : The polarity of the Fan output driver is inverted.
+            // A 0x00 setting will correspond to a 100% duty cycle or maximum DAC output voltage.
+            self.update_reg(Register::FanConfig, 0b0001_0000, 0)?;
+        } else {
+            // Clear FanConfig[4] POLARITY : The polarity of the Fan output driver is non-inverted.
+            // A 0x00 setting will correspond to a 0% duty cycle or minimum DAC output voltage.
+            self.update_reg(Register::FanConfig, 0, 0b0001_0000)?;
+        }
         Ok(self)
     }
 
