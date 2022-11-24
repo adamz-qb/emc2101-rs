@@ -58,7 +58,7 @@ impl<E, I> EMC2101<I>
 where
     I: i2c::Read<Error = E> + i2c::Write<Error = E> + i2c::WriteRead<Error = E>,
 {
-    /// Initializes the SCD30 driver.
+    /// Initializes the EMC2101 driver.
     ///
     /// This consumes the I2C bus `I`. Before you can get temperature and fan measurements,
     /// you must call the `init` method which calibrates the sensor. The address will almost always
@@ -71,8 +71,7 @@ where
     pub fn init(&mut self) -> Result<(), Error<E>> {
         self.check_id()?;
         self.enable_tach_input()?;
-        self.set_fan_pwm_frequency(1400)?;
-        self.set_fan_output_pwm()?;
+        self.set_fan_pwm(1400)?;
         self.set_fan_power(100)
     }
 
@@ -92,14 +91,64 @@ where
     /// enable_tach_input enable using the TACH/ALERT pin as an input to read the fan speed
     /// signal from a 4-pin fan.
     pub fn enable_tach_input(&mut self) -> Result<(), Error<E>> {
-        self.update_reg(Register::Configuration, 0b0000_0010, 0)
-    }
-    
-    pub fn set_fan_output_pwm(&mut self) -> Result<(), Error<E>> {
-        self.update_reg(Register::Configuration, 0, 0b0001_0000)
+        // Clear Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as open drain,
+        // active low interrupt.
+        self.update_reg(Register::Configuration, 0b0000_0100, 0)?;
+        Ok(())
     }
 
-    pub fn set_fan_output_dac(&mut self) -> Result<(), Error<E>> {
+    pub fn enable_alert_input(&mut self) -> Result<(), Error<E>> {
+        // Clear Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as open drain,
+        // active low interrupt.
+        self.update_reg(Register::Configuration, 0, 0b0000_0100)?;
+        Ok(())
+    }
+
+    pub fn set_fan_pwm(&mut self, freq: u32) -> Result<(), Error<E>> {
+        match freq {
+            1_400 => {
+                // Set FanConfig[3] CLK_SEL : The base clock that is used to determine the PWM
+                // frequency is 1.4kHz.
+                // Clear FanConfig[2] CLK_OVR : The base clock frequency is determined by the
+                // CLK_SEL bit.
+                self.update_reg(Register::FanConfig, 0b0000_1000, 0b0000_0100)?;
+            }
+            360_000 => {
+                // Clear FanConfig[3] CLK_SEL : The base clock that is used to determine the PWM
+                // frequency is 360kHz.
+                // Clear FanConfig[2] CLK_OVR : The base clock frequency is determined by the
+                // CLK_SEL bit.
+                self.update_reg(Register::FanConfig, 0, 0b0000_1100)?;
+            }
+            23..=160_000 => {
+                // Set FanConfig[2] CLK_OVR : The base clock that is used to determine the PWM frequency
+                // is set by the Frequency Divide Register.
+                self.update_reg(Register::FanConfig, 0b0000_0010, 0b0000_1000)?;
+                // The PWM frequency when the PWMFrequencyDivide Register is used is shown in equation :
+                // PWM_D = (360k / (2 * PWM_F * FREQ))
+                let div: u16 = (160_000u32 / freq) as u16;
+                let pwm_f: u8 = (div >> 8) as u8 & 0x1F;
+                let pwm_d: u8 = (div & 0xFF) as u8;
+                // The PWMFrequency Register determines the final PWM frequency and "effective resolution"
+                // of the PWM driver.
+                self.write_reg(Register::PWMFrequency, pwm_f)?;
+                // When the CLK_OVR bit is set to a logic '1', the PWMFrequencyDivide Register is used in
+                // conjunction with the PWMFrequency Register to determine the final PWM frequency that the
+                // load will see.
+                self.write_reg(Register::PWMFrequencyDivide, pwm_d)?;
+            }
+            _ => {
+                defmt::error!("Invalid PWM Frequency.");
+                return Err(Error::InvalidValue);
+            }
+        }
+        // Clear Configuration[4] DAC : PWM output enabled at FAN pin
+        self.update_reg(Register::Configuration, 0, 0b0001_0000)?;
+        Ok(())
+    }
+
+    pub fn set_fan_dac(&mut self) -> Result<(), Error<E>> {
+        // Set Configuration[4] DAC : DAC output enabled at FAN pin
         self.update_reg(Register::Configuration, 0b0001_0000, 0)
     }
 
@@ -109,49 +158,45 @@ where
             return Err(Error::InvalidValue);
         }
         let val: u8 = (percent * 64 / 100) as u8;
+        // The FanSetting Register drives the fan driver when the Fan Control Look-Up Table is not used.
+        // Any data written to the FanSetting register is applied immediately to the fan driver (PWM or DAC).
         self.write_reg(Register::FanSetting, val)
     }
 
-    pub fn set_fan_pwm_frequency(&mut self, freq: u32) -> Result<(), Error<E>> {
-        if freq == 1_400 {
-            return self.update_reg(Register::FanConfig, 0b0000_1000, 0b0000_0100);
-        }
-        if freq == 360_000 {
-            return self.update_reg(Register::FanConfig, 0, 0b0000_1100);
-        }
-        if freq > 160_000 {
-            defmt::error!("Invalid PWM Frequency.");
-            return Err(Error::InvalidValue);
-        }
-        let div: u16 = (160_000u32 / freq) as u16;
-        let pwm_f: u8 = (div >> 8) as u8 & 0x1F;
-        self.write_reg(Register::PWMFrequency, pwm_f)?;
-        let pwm_d: u8 = (div & 0xFF) as u8;
-        self.write_reg(Register::PWMFrequencyDivide, pwm_d)?;
-        self.update_reg(Register::FanConfig, 0b0000_0010, 0b0000_1000)
-    }
-
     fn write_reg<R: Into<u8>>(&mut self, reg: R, value: u8) -> Result<(), Error<E>> {
-        self.i2c.write(self.address, &[reg.into(), value]).map_err(Error::I2c)?;
+        self.i2c
+            .write(self.address, &[reg.into(), value])
+            .map_err(Error::I2c)?;
         Ok(())
     }
 
-    fn update_reg<R: Into<u8>>(&mut self, reg: R, mask_set: u8, mask_clear: u8) -> Result<(), Error<E>> {
+    fn update_reg<R: Into<u8>>(
+        &mut self,
+        reg: R,
+        mask_set: u8,
+        mask_clear: u8,
+    ) -> Result<(), Error<E>> {
         let reg = reg.into();
         let mut buf = [0x00];
-        self.i2c.write_read(self.address, &[reg], &mut buf).map_err(Error::I2c)?;
+        self.i2c
+            .write_read(self.address, &[reg], &mut buf)
+            .map_err(Error::I2c)?;
         let current = buf[0];
         buf[0] |= mask_set;
         buf[0] &= !mask_clear;
         if current != buf[0] {
-            self.i2c.write(self.address, &[reg, buf[0]]).map_err(Error::I2c)?;
+            self.i2c
+                .write(self.address, &[reg, buf[0]])
+                .map_err(Error::I2c)?;
         }
         Ok(())
     }
 
     fn read_reg<R: Into<u8>>(&mut self, reg: R) -> Result<u8, Error<E>> {
         let mut buf = [0x00];
-        self.i2c.write_read(self.address, &[reg.into()], &mut buf).map_err(Error::I2c)?;
+        self.i2c
+            .write_read(self.address, &[reg.into()], &mut buf)
+            .map_err(Error::I2c)?;
         Ok(buf[0])
     }
 
@@ -185,9 +230,11 @@ mod tests {
     /// Test reading the Product ID Register.
     #[test]
     fn check_id() {
-        let expectations = vec![
-            Transaction::write_read(SENSOR_ADDRESS, vec![super::Register::ProductID as u8], vec![super::ProductID::EMC2101 as u8]),
-        ];
+        let expectations = vec![Transaction::write_read(
+            SENSOR_ADDRESS,
+            vec![super::Register::ProductID as u8],
+            vec![super::ProductID::EMC2101 as u8],
+        )];
         let mock_i2c = I2cMock::new(&expectations);
 
         let mut emc2101 = EMC2101::new(mock_i2c, SENSOR_ADDRESS);
