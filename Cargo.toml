@@ -1,12 +1,13 @@
 [package]
 name = "emc2101-driver"
-authors = ["Georges Palauqui <georges.palauqui@gptechinno.com>"]
+authors = ["Georges Palauqui <g.palauqui@gptechinno.com>"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 categories = ["embedded", "hardware-support", "no-std"]
 keywords = ["no-std", "embedded-hal-driver", "sensor", "temperature", "fan"]
-description = "Rust embedded-hal driver for the EMC2101 temperature and fan sensor."
+description = "Rust embedded-hal driver for the EMC2101 temperature sensor and fan sensor/controler."
+repository = "https://github.com/Georges760/emc2101-rs"
 
 [dependencies]
 defmt = "0.3.2"
