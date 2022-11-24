@@ -12,9 +12,17 @@ pub enum ProductID {
     EMC2101R = 0x28,
 }
 
-/// Commands that can be sent to the EMC2101 sensor.
-pub enum Command {
-    ProductID = 0b1111_1101, // 0xFD
+/// Registers of the EMC2101 sensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Register {
+    Configuration = 0x03,
+    ProductID = 0xFD,
+}
+
+impl From<Register> for u8 {
+    fn from(r: Register) -> u8 {
+        r as u8
+    }
 }
 
 /// Driver errors.
@@ -34,7 +42,7 @@ pub enum Error<E> {
 /// of special address translating hardware in use.
 pub struct EMC2101<I>
 where
-    I: i2c::Read + i2c::Write,
+    I: i2c::Read + i2c::Write + i2c::WriteRead,
 {
     i2c: I,
     address: u8,
@@ -42,7 +50,7 @@ where
 
 impl<E, I> EMC2101<I>
 where
-    I: i2c::Read<Error = E> + i2c::Write<Error = E>,
+    I: i2c::Read<Error = E> + i2c::Write<Error = E> + i2c::WriteRead<Error = E>,
 {
     /// Initializes the SCD30 driver.
     ///
@@ -54,28 +62,14 @@ where
     }
 
     /// Run the EMC2101 init routine.
-    pub fn init(
-        &mut self,
-    ) -> Result<(), Error<E>> {
-    // ) -> Result<EMC2101Initialized<I>, Error<E>> {
-
+    pub fn init(&mut self) -> Result<(), Error<E>> {
         self.check_id()?;
-
-        Ok(())
-        // Ok(EMC2101Initialized { EMC2101: self })
+        self.enable_tach_input()
     }
 
     /// check_id asks the EMC2101 sensor to report its Product ID.
     fn check_id(&mut self) -> Result<ProductID, Error<E>> {
-        let command: [u8; 1] = [Command::ProductID as u8];
-        let mut read_buffer = [0u8; 1];
-
-        self.i2c.write(self.address, &command).map_err(Error::I2c)?;
-        self.i2c
-            .read(self.address, &mut read_buffer)
-            .map_err(Error::I2c)?;
-
-        let product_id_byte = read_buffer[0];
+        let product_id_byte = self.read_reg(Register::ProductID)?;
         if product_id_byte == ProductID::EMC2101 as u8 {
             return Ok(ProductID::EMC2101);
         }
@@ -86,26 +80,32 @@ where
         Err(Error::InvalidID)
     }
 
-    /// send_initialize sends the Initialize command to the sensor which make it calibrate.
-    ///
-    /// After sending initialize, there is a required 40ms wait period and verification
-    /// that the sensor reports itself calibrated. See the `init` method.
-    // fn send_initialize(&mut self) -> Result<(), Error<E>> {
-    //     // Send CheckStatus, read one byte back.
-    //     let command: [u8; 3] = [
-    //         // Initialize = 0b1011_1110. Equivalent to 0xBE, Section 5.3, page 8, Table 9
-    //         Command::Initialize as u8,
-    //         // Two parameters as described in the datasheet. There is no indication what these
-    //         // parameters mean, just that they should be provided. There is also no returned
-    //         // value.
-    //         0b0000_1000, // 0x08
-    //         0b0000_0000, // 0x00
-    //     ];
-
-    //     self.i2c.write(self.address, &command).map_err(Error::I2c)?;
-
+    /// enable_tach_input enable using the TACH/ALERT pin as an input to read the fan speed
+    /// signal from a 4-pin fan.
+    fn enable_tach_input(&mut self) -> Result<(), Error<E>> {
+        self.update_reg(Register::Configuration, 0b0000_0010, 0)
+    }
+    
+    // fn write_reg<R: Into<u8>>(&mut self, reg: R, value: u8) -> Result<(), Error<E>> {
+    //     self.i2c.write(self.address, &[reg.into(), value]).map_err(Error::I2c)?;
     //     Ok(())
     // }
+
+    fn update_reg<R: Into<u8>>(&mut self, reg: R, mask_set: u8, mask_clear: u8) -> Result<(), Error<E>> {
+        let reg = reg.into();
+        let mut buf = [0x00];
+        self.i2c.write_read(self.address, &[reg], &mut buf).map_err(Error::I2c)?;
+        buf[0] |= mask_set;
+        buf[0] &= !mask_clear;
+        self.i2c.write(self.address, &[reg, buf[0]]).map_err(Error::I2c)?;
+        Ok(())
+    }
+
+    fn read_reg<R: Into<u8>>(&mut self, reg: R) -> Result<u8, Error<E>> {
+        let mut buf = [0x00];
+        self.i2c.write_read(self.address, &[reg.into()], &mut buf).map_err(Error::I2c)?;
+        Ok(buf[0])
+    }
 
     /// Destroys this driver and releases the I2C bus `I`
     pub fn destroy(self) -> Self {
@@ -134,12 +134,11 @@ mod tests {
         let _emc2101_2 = EMC2101::new(mock_i2c_2, SENSOR_ADDRESS);
     }
 
-    /// Test sending the CheckStatus i2c command, and read a status byte back.
+    /// Test reading the Product ID Register.
     #[test]
-    fn check_status() {
+    fn check_id() {
         let expectations = vec![
-            Transaction::write(SENSOR_ADDRESS, vec![super::Command::ProductID as u8]),
-            Transaction::read(SENSOR_ADDRESS, vec![super::ProductID::EMC2101 as u8]),
+            Transaction::write_read(SENSOR_ADDRESS, vec![super::Register::ProductID as u8], vec![super::ProductID::EMC2101 as u8]),
         ];
         let mock_i2c = I2cMock::new(&expectations);
 
