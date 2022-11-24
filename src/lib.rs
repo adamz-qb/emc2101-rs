@@ -12,10 +12,34 @@ pub enum ProductID {
     EMC2101R = 0x28,
 }
 
+pub enum ConversionRate {
+    Rate1_16Hz = 0,
+    Rate1_8Hz = 1,
+    Rate1_4Hz = 2,
+    Rate1_2Hz = 3,
+    Rate1Hz = 4,
+    Rate2Hz = 5,
+    Rate4Hz = 6,
+    Rate8Hz = 7,
+    Rate16Hz = 8,
+    Rate32Hz = 9,
+}
+
 /// Registers of the EMC2101 sensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Register {
+    InternalTemperature = 0x00,
+    ExternalTemperatureMSB = 0x01,
     Configuration = 0x03,
+    ConversionRate = 0x04,
+    InternalTempLimit = 0x05,
+    ExternalTempLimitHigh = 0x07,
+    ExternalTempLimitLow = 0x08,
+    ExternalTemperatureForce = 0x0C,
+    ExternalTemperatureLSB = 0x10,
+    AlertMask = 0x16,
+    TachLSB = 0x46,
+    TachMSB = 0x47,
     FanConfig = 0x4A,
     FanSetting = 0x4C,
     PWMFrequency = 0x4D,
@@ -66,6 +90,8 @@ where
     pub fn new(i2c: I, address: u8) -> Result<Self, Error<E>> {
         let mut emc2101 = EMC2101 { i2c, address };
         emc2101.check_id()?;
+        // Disable all alerts interrupt, will be enable one by one calling monitor_xxx() functions.
+        emc2101.write_reg(Register::AlertMask, 0xFF)?;
         Ok(emc2101)
     }
 
@@ -82,19 +108,121 @@ where
         Err(Error::InvalidID)
     }
 
-    /// enable_tach_input configure ALERT#/TACH pin as high impedance TACH input.
-    /// This may require an external pull-up resistor to set the proper signaling levels.
-    pub fn enable_tach_input(&mut self) -> Result<&mut Self, Error<E>> {
-        // Set Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as high impedance TACH input.
-        self.update_reg(Register::Configuration, 0b0000_0100, 0)?;
+    /// set_temp_conversion_rate set the conversion rate in Hertz.
+    pub fn set_temp_conversion_rate(
+        &mut self,
+        rate: ConversionRate,
+    ) -> Result<&mut Self, Error<E>> {
+        self.write_reg(Register::ConversionRate, rate as u8)?;
         Ok(self)
     }
 
-    /// enable_alert_input configure ALERT#/TACH pin as open drain active low ALERT# interrupt.
-    pub fn enable_alert_input(&mut self) -> Result<&mut Self, Error<E>> {
+    /// force_temp_external force the external temperature value to a virtual value.
+    /// When determining the position of the Fan Control Look-up Table, the contents
+    /// of the ExternalTemperatureForce Register will be used instead of the measured
+    /// External Diode temperature as normal.
+    pub fn force_temp_external(&mut self, value: i8) -> Result<&mut Self, Error<E>> {
+        self.write_reg(Register::ExternalTemperatureForce, value as u8)?;
+        // Set FanConfig[6] FORCE : the ExternalTemperatureForce Register is used.
+        self.update_reg(Register::FanConfig, 0b0100_0000, 0)?;
+        Ok(self)
+    }
+
+    /// real_temp_external let the measured External Diode temperature be used to
+    /// determine the position in the Fan Control Look-up Table.
+    pub fn real_temp_external(&mut self) -> Result<&mut Self, Error<E>> {
+        // Clear FanConfig[6] FORCE : the ExternalTemperatureForce Register is not used.
+        self.update_reg(Register::FanConfig, 0, 0b0100_0000)?;
+        Ok(self)
+    }
+
+    /// get_temp_conversion_rate get the current conversion rate in Hertz.
+    pub fn get_temp_conversion_rate(&mut self) -> Result<ConversionRate, Error<E>> {
+        let rate: ConversionRate = match self.read_reg(Register::ConversionRate)? {
+            0 => ConversionRate::Rate1_16Hz,
+            1 => ConversionRate::Rate1_8Hz,
+            2 => ConversionRate::Rate1_4Hz,
+            3 => ConversionRate::Rate1_2Hz,
+            4 => ConversionRate::Rate1Hz,
+            5 => ConversionRate::Rate2Hz,
+            6 => ConversionRate::Rate4Hz,
+            7 => ConversionRate::Rate8Hz,
+            8 => ConversionRate::Rate16Hz,
+            9..=15 => ConversionRate::Rate32Hz,
+            _ => return Err(Error::InvalidValue),
+        };
+        Ok(rate)
+    }
+
+    /// get_temp_internal read the internal temperature value in degree Celsius.
+    pub fn get_temp_internal(&mut self) -> Result<i8, Error<E>> {
+        let val = self.read_reg(Register::InternalTemperature)?;
+        Ok(val as i8)
+    }
+
+    /// get_temp_external read the external temperature value in degree Celsius.
+    pub fn get_temp_external(&mut self) -> Result<i8, Error<E>> {
+        let val = self.read_reg(Register::ExternalTemperatureMSB)?;
+        Ok(val as i8)
+    }
+
+    /// get_temp_external read the external temperature value in degree Celsius.
+    pub fn get_temp_external_precise(&mut self) -> Result<f32, Error<E>> {
+        let msb = self.read_reg(Register::ExternalTemperatureMSB)?;
+        let lsb = self.read_reg(Register::ExternalTemperatureLSB)?;
+        let raw: i16 = ((msb as u16) << 8 + lsb) as i16;
+        let ret: f32 = (raw >> 5) as f32 * 0.125;
+        Ok(ret)
+    }
+
+    pub fn monitor_temp_internal_high(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
+        // If the measured temperature for the internal diode exceeds the Internal Temperature limit,
+        // then the INT_HIGH bit is set in the Status Register. It remains set until the internal
+        // temperature drops below the high limit.
+        self.write_reg(Register::InternalTempLimit, limit as u8)?;
+        // Clear AlertMask[6] INT_MSK : The Internal Diode will generate an interrupt if measured temperature
+        // exceeds the Internal Diode high limit.
+        self.update_reg(Register::AlertMask, 0, 0b0100_0000)?;
+        Ok(self)
+    }
+
+    pub fn monitor_temp_external_high(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
+        // If the measured temperature for the external diode exceeds the External Temperature High limit,
+        // then the EXT_HIGH bit is set in the Status Register. It remains set until the external
+        // temperature drops below the high limit.
+        self.write_reg(Register::ExternalTempLimitHigh, limit as u8)?;
+        // Clear AlertMask[4] HIGH_MSK : The External Diode will generate an interrupt if measured temperature
+        // exceeds the External Diode high limit.
+        self.update_reg(Register::AlertMask, 0, 0b0001_0000)?;
+        Ok(self)
+    }
+
+    pub fn monitor_temp_external_low(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
+        // If the measured temperature for the external diode drops below the External Temperature Low limit,
+        // then the EXT_LOW bit is set in the Status Register. It remains set until the external
+        // temperature exceeds the low limit.
+        self.write_reg(Register::ExternalTempLimitLow, limit as u8)?;
+        // Clear AlertMask[3] LOW_MSK : The External Diode will generate an interrupt if measured temperature
+        // drops below the External Diode low limit.
+        self.update_reg(Register::AlertMask, 0, 0b0000_1000)?;
+        Ok(self)
+    }
+
+    /// enable_alert_output configure ALERT#/TACH pin as open drain active low ALERT# interrupt.
+    /// This may require an external pull-up resistor to set the proper signaling levels.
+    pub fn enable_alert_output(&mut self) -> Result<&mut Self, Error<E>> {
         // Clear Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as open drain,
         // active low interrupt.
-        self.update_reg(Register::Configuration, 0, 0b0000_0100)?;
+        // Clear Configuration[7] MASK : The ALERT#/TACH pin will be asserted if any bit is set in the
+        // Status Register. Once the pin is asserted, it remains asserted.
+        self.update_reg(Register::Configuration, 0, 0b1000_0100)?;
+        Ok(self)
+    }
+
+    /// enable_tach_input configure ALERT#/TACH pin as high impedance TACH input.
+    pub fn enable_tach_input(&mut self) -> Result<&mut Self, Error<E>> {
+        // Set Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as high impedance TACH input.
+        self.update_reg(Register::Configuration, 0b0000_0100, 0)?;
         Ok(self)
     }
 
@@ -162,6 +290,16 @@ where
         Ok(self)
     }
 
+    pub fn get_fan_rpm(&mut self) -> Result<u16, Error<E>> {
+        let msb = self.read_reg(Register::TachMSB)?;
+        let lsb = self.read_reg(Register::TachLSB)?;
+        let raw: u16 = (msb as u16) << 8 + (lsb as u16);
+        if raw == 0xFFFF {
+            return Ok(0);
+        }
+        Ok((5_400_000u32 / (raw as u32)) as u16)
+    }
+
     /// write_reg blindly write a single register with a fixed value.
     fn write_reg<R: Into<u8>>(&mut self, reg: R, value: u8) -> Result<(), Error<E>> {
         self.i2c
@@ -221,11 +359,14 @@ mod tests {
     /// measures of success for this driver.
     #[test]
     fn emc2101_new() {
-        let expectations = vec![Transaction::write_read(
-            SENSOR_ADDRESS,
-            vec![super::Register::ProductID as u8],
-            vec![super::ProductID::EMC2101 as u8],
-        )];
+        let expectations = vec![
+            Transaction::write_read(
+                SENSOR_ADDRESS,
+                vec![super::Register::ProductID as u8],
+                vec![super::ProductID::EMC2101 as u8],
+            ),
+            Transaction::write(SENSOR_ADDRESS, vec![super::Register::AlertMask as u8, 0xFF]),
+        ];
         // In the real app we'd used shared-bus to share the i2c bus between the two drivers, but
         // I think this is fine for a test.
         let mock_i2c_1 = I2cMock::new(&expectations);
