@@ -16,6 +16,10 @@ pub enum ProductID {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Register {
     Configuration = 0x03,
+    FanConfig = 0x4A,
+    FanSetting = 0x4C,
+    PWMFrequency = 0x4D,
+    PWMFrequencyDivide = 0x4E,
     ProductID = 0xFD,
 }
 
@@ -28,10 +32,12 @@ impl From<Register> for u8 {
 /// Driver errors.
 #[derive(Debug, PartialEq)]
 pub enum Error<E> {
-    /// I2C bus error
+    /// I2C bus error.
     I2c(E),
-    /// The device Product ID is not supported
+    /// The device Product ID is not supported.
     InvalidID,
+    /// The given Value is not valid.
+    InvalidValue,
     /// Errors such as overflowing the stack.
     Internal,
 }
@@ -64,11 +70,14 @@ where
     /// Run the EMC2101 init routine.
     pub fn init(&mut self) -> Result<(), Error<E>> {
         self.check_id()?;
-        self.enable_tach_input()
+        self.enable_tach_input()?;
+        self.set_fan_pwm_frequency(1400)?;
+        self.set_fan_output_pwm()?;
+        self.set_fan_power(100)
     }
 
     /// check_id asks the EMC2101 sensor to report its Product ID.
-    fn check_id(&mut self) -> Result<ProductID, Error<E>> {
+    pub fn check_id(&mut self) -> Result<ProductID, Error<E>> {
         let product_id_byte = self.read_reg(Register::ProductID)?;
         if product_id_byte == ProductID::EMC2101 as u8 {
             return Ok(ProductID::EMC2101);
@@ -82,14 +91,50 @@ where
 
     /// enable_tach_input enable using the TACH/ALERT pin as an input to read the fan speed
     /// signal from a 4-pin fan.
-    fn enable_tach_input(&mut self) -> Result<(), Error<E>> {
+    pub fn enable_tach_input(&mut self) -> Result<(), Error<E>> {
         self.update_reg(Register::Configuration, 0b0000_0010, 0)
     }
     
-    // fn write_reg<R: Into<u8>>(&mut self, reg: R, value: u8) -> Result<(), Error<E>> {
-    //     self.i2c.write(self.address, &[reg.into(), value]).map_err(Error::I2c)?;
-    //     Ok(())
-    // }
+    pub fn set_fan_output_pwm(&mut self) -> Result<(), Error<E>> {
+        self.update_reg(Register::Configuration, 0, 0b0001_0000)
+    }
+
+    pub fn set_fan_output_dac(&mut self) -> Result<(), Error<E>> {
+        self.update_reg(Register::Configuration, 0b0001_0000, 0)
+    }
+
+    pub fn set_fan_power(&mut self, percent: u8) -> Result<(), Error<E>> {
+        if percent > 100 {
+            defmt::error!("Invalid Fan Power.");
+            return Err(Error::InvalidValue);
+        }
+        let val: u8 = (percent * 64 / 100) as u8;
+        self.write_reg(Register::FanSetting, val)
+    }
+
+    pub fn set_fan_pwm_frequency(&mut self, freq: u32) -> Result<(), Error<E>> {
+        if freq == 1_400 {
+            return self.update_reg(Register::FanConfig, 0b0000_1000, 0b0000_0100);
+        }
+        if freq == 360_000 {
+            return self.update_reg(Register::FanConfig, 0, 0b0000_1100);
+        }
+        if freq > 160_000 {
+            defmt::error!("Invalid PWM Frequency.");
+            return Err(Error::InvalidValue);
+        }
+        let div: u16 = (160_000u32 / freq) as u16;
+        let pwm_f: u8 = (div >> 8) as u8 & 0x1F;
+        self.write_reg(Register::PWMFrequency, pwm_f)?;
+        let pwm_d: u8 = (div & 0xFF) as u8;
+        self.write_reg(Register::PWMFrequencyDivide, pwm_d)?;
+        self.update_reg(Register::FanConfig, 0b0000_0010, 0b0000_1000)
+    }
+
+    fn write_reg<R: Into<u8>>(&mut self, reg: R, value: u8) -> Result<(), Error<E>> {
+        self.i2c.write(self.address, &[reg.into(), value]).map_err(Error::I2c)?;
+        Ok(())
+    }
 
     fn update_reg<R: Into<u8>>(&mut self, reg: R, mask_set: u8, mask_clear: u8) -> Result<(), Error<E>> {
         let reg = reg.into();
