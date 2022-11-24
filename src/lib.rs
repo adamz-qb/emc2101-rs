@@ -55,6 +55,9 @@ enum Register {
     FanSetting = 0x4C,
     PWMFrequency = 0x4D,
     PWMFrequencyDivide = 0x4E,
+    FanControlLUTHysteresis = 0x4F,
+    FanControlLUTT1 = 0x50,
+    FanControlLUTS1 = 0x51,
     AveragingFilter = 0xBF,
     ProductID = 0xFD,
 }
@@ -74,6 +77,10 @@ pub enum Error<E> {
     InvalidID,
     /// The given Value is not valid.
     InvalidValue,
+    /// The given array as an invalid size.
+    InvalidSize,
+    /// The given array is not sorted.
+    InvalidSorting,
     /// Errors such as overflowing the stack.
     Internal,
 }
@@ -89,6 +96,12 @@ pub struct Status {
     temp_ext_low: bool,
     temp_ext_critical: bool,
     tack_limit: bool,
+}
+
+/// Look-up Table
+pub struct Level {
+    temp: u8,
+    percent: u8,
 }
 
 /// An EMC2101 sensor on the I2C bus `I`.
@@ -243,13 +256,13 @@ where
     pub fn monitor_temp_external_critical(
         &mut self,
         limit: i8,
-        hysteresis: i8,
+        hysteresis: u8,
     ) -> Result<&mut Self, Error<E>> {
         // If the external diode exceeds the TCRIT Temp limit (even if it does not exceeds the External Diode
         // Temperature Limit), the TCRIT bit is set in the Status Register. It remains set until the external
         // temperature drops below the Critical Limit minus the Critical Hysteresis.
         self.write_reg(Register::ExternalTempCriticalLimit, limit as u8)?;
-        self.write_reg(Register::ExternalTempCriticalHysteresis, hysteresis as u8)?;
+        self.write_reg(Register::ExternalTempCriticalHysteresis, hysteresis)?;
         // Clear AlertMask[4] HIGH_MSK : The External Diode will generate an interrupt if measured temperature
         // exceeds the External Diode high limit.
         self.update_reg(Register::AlertMask, 0, 0b0001_0000)?;
@@ -354,15 +367,76 @@ where
     }
 
     /// set_fan_power set the FAN power in percent (for both modes PWM/DAC).
+    /// The 'power' must be between 0 and 100%.
+    /// If Look-up Table was enabled, it will be disabled and the fixed power value will be used.
     pub fn set_fan_power(&mut self, percent: u8) -> Result<&mut Self, Error<E>> {
         if percent > 100 {
             defmt::error!("Invalid Fan Power.");
             return Err(Error::InvalidValue);
         }
+        let fan_config: u8 = self.read_reg(Register::FanConfig)?;
+        // FanConfig[5] PROG == 0 :
+        // the FanSetting Register and Fan Control Look-Up Table Registers are read-only.
+        if fan_config & 0x20 == 0x00 {
+            // Set FanConfig[5] PROG : the FanSetting Register and Fan Control Look-Up
+            // Table Registers can be written and the Fan Control Look-Up Table Registers
+            // will not be used.
+            self.write_reg(Register::FanConfig, fan_config | 0x20)?;
+        }
         let val: u8 = (percent * 64 / 100) as u8;
-        // The FanSetting Register drives the fan driver when the Fan Control Look-Up Table is not used.
-        // Any data written to the FanSetting register is applied immediately to the fan driver (PWM or DAC).
+        // The FanSetting Register drives the fan driver when the Fan Control Look-Up
+        // Table is not used.
+        // Any data written to the FanSetting register is applied immediately to the
+        // fan driver (PWM or DAC).
         self.write_reg(Register::FanSetting, val)?;
+        Ok(self)
+    }
+
+    /// set_fan_lut set the FAN according to a Look-up Table with hysteresis.
+    /// The 'lut' must be 8 or less levels and be ordered with lower temperature value first.
+    /// Each level temperature must be between 0 and 127 degrees Celsius.
+    /// Each level power must be between 0 and 100%.
+    pub fn set_fan_lut(&mut self, lut: &[Level], hysteresis: u8) -> Result<&mut Self, Error<E>> {
+        if lut.len() > 8 || lut.len() == 0 {
+            return Err(Error::InvalidSize);
+        }
+        if hysteresis > 31 {
+            return Err(Error::InvalidValue);
+        }
+        let fan_config: u8 = self.read_reg(Register::FanConfig)?;
+        // FanConfig[5] PROG == 0 :
+        // the FanSetting Register and Fan Control Look-Up Table Registers are read-only
+        // and the Fan Control Look-Up Table Registers will be used.
+        if fan_config & 0x20 == 0x00 {
+            // Set FanConfig[5] PROG : the FanSetting Register and Fan Control Look-Up
+            // Table Registers can be written and the Fan Control Look-Up Table Registers
+            // will not be used.
+            self.write_reg(Register::FanConfig, fan_config | 0x20)?;
+        }
+        let mut last_temp: u8 = 0;
+        let mut index: u8 = 0;
+        for l in lut {
+            if l.temp > 127 {
+                return Err(Error::InvalidValue);
+            }
+            if l.percent > 100 {
+                return Err(Error::InvalidValue);
+            }
+            if l.temp <= last_temp {
+                return Err(Error::InvalidSorting);
+            }
+            last_temp = l.temp;
+            self.write_reg((Register::FanControlLUTT1 as u8) + 2 * index, l.temp)?;
+            let power: u8 = (l.percent * 64 / 100) as u8;
+            self.write_reg((Register::FanControlLUTS1 as u8) + 2 * index, power)?;
+            index += 1;
+        }
+        // FanControlLUTHysteresis determines the amount of hysteresis applied to the temperature
+        // inputs of the fan control Fan Control Look-Up Table.
+        self.write_reg(Register::FanControlLUTHysteresis, hysteresis)?;
+        // Clear FanConfig[5] PROG : the FanSetting Register and Fan Control Look-Up Table
+        // Registers are read-only and the Fan Control Look-Up Table Registers will be used.
+        self.write_reg(Register::FanConfig, fan_config | 0x20)?;
         Ok(self)
     }
 
