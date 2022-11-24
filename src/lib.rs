@@ -12,6 +12,7 @@ pub enum ProductID {
     EMC2101R = 0x28,
 }
 
+/// ADC Conversion Rates.
 pub enum ConversionRate {
     Rate1_16Hz = 0,
     Rate1_8Hz = 1,
@@ -25,11 +26,19 @@ pub enum ConversionRate {
     Rate32Hz = 9,
 }
 
+/// ADC Filter Levels.
+pub enum FilterLevel {
+    Disabled = 0,
+    Level1 = 1,
+    Level2 = 3,
+}
+
 /// Registers of the EMC2101 sensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Register {
     InternalTemperature = 0x00,
     ExternalTemperatureMSB = 0x01,
+    Status = 0x02,
     Configuration = 0x03,
     ConversionRate = 0x04,
     InternalTempLimit = 0x05,
@@ -38,12 +47,15 @@ enum Register {
     ExternalTemperatureForce = 0x0C,
     ExternalTemperatureLSB = 0x10,
     AlertMask = 0x16,
+    ExternalTempCriticalLimit = 0x19,
+    ExternalTempCriticalHysteresis = 0x21,
     TachLSB = 0x46,
     TachMSB = 0x47,
     FanConfig = 0x4A,
     FanSetting = 0x4C,
     PWMFrequency = 0x4D,
     PWMFrequencyDivide = 0x4E,
+    AveragingFilter = 0xBF,
     ProductID = 0xFD,
 }
 
@@ -64,6 +76,19 @@ pub enum Error<E> {
     InvalidValue,
     /// Errors such as overflowing the stack.
     Internal,
+}
+
+/// Device Satuts.
+#[allow(dead_code)]
+pub struct Status {
+    eeprom_error: bool,
+    ext_diode_fault: bool,
+    adc_busy: bool,
+    temp_int_high: bool,
+    temp_ext_high: bool,
+    temp_ext_low: bool,
+    temp_ext_critical: bool,
+    tack_limit: bool,
 }
 
 /// An EMC2101 sensor on the I2C bus `I`.
@@ -108,12 +133,34 @@ where
         Err(Error::InvalidID)
     }
 
-    /// set_temp_conversion_rate set the conversion rate in Hertz.
-    pub fn set_temp_conversion_rate(
+    /// get_status gives the device current status.
+    pub fn get_status(&mut self) -> Result<Status, Error<E>> {
+        let s = self.read_reg(Register::Status)?;
+        Ok(Status {
+            eeprom_error: s & 0x20 == 0x20,
+            ext_diode_fault: s & 0x04 == 0x04,
+            adc_busy: s & 0x80 == 0x80,
+            temp_int_high: s & 0x40 == 0x40,
+            temp_ext_high: s & 0x10 == 0x10,
+            temp_ext_low: s & 0x08 == 0x08,
+            temp_ext_critical: s & 0x02 == 0x02,
+            tack_limit: s & 0x01 == 0x01,
+        })
+    }
+
+    /// configure_adc set the conversion rate in Hertz and the filter level.
+    pub fn configure_adc(
         &mut self,
         rate: ConversionRate,
+        filter: FilterLevel,
     ) -> Result<&mut Self, Error<E>> {
+        // ConversionRate[3:0] : ADC conversion rate.
         self.write_reg(Register::ConversionRate, rate as u8)?;
+        // AveragingFilter[2:1] FILTER[1:0] : control the level of digital filtering
+        // that is applied to the External Diode temperature measurements.
+        let f_set: u8 = (filter as u8) << 1;
+        let f_clr: u8 = !f_set & 0x06;
+        self.update_reg(Register::AveragingFilter, f_set, f_clr)?;
         Ok(self)
     }
 
@@ -175,6 +222,9 @@ where
         Ok(ret)
     }
 
+    /// monitor_temp_internal_high start monitoring the internal temperature and will create
+    /// an alert when the temperature exceeds the limit.
+    /// The temp_int_high will be true in Status until the internal temperature drops below the high limit.
     pub fn monitor_temp_internal_high(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
         // If the measured temperature for the internal diode exceeds the Internal Temperature limit,
         // then the INT_HIGH bit is set in the Status Register. It remains set until the internal
@@ -186,6 +236,29 @@ where
         Ok(self)
     }
 
+    /// monitor_temp_external_critical start monitoring the external temperature and will create
+    /// an alert when the temperature exceeds the critical limit.
+    /// The temp_ext_critical will be true in Status until the external temperature drops below the critical
+    /// limit minus critical hysteresis.
+    pub fn monitor_temp_external_critical(
+        &mut self,
+        limit: i8,
+        hysteresis: i8,
+    ) -> Result<&mut Self, Error<E>> {
+        // If the external diode exceeds the TCRIT Temp limit (even if it does not exceeds the External Diode
+        // Temperature Limit), the TCRIT bit is set in the Status Register. It remains set until the external
+        // temperature drops below the Critical Limit minus the Critical Hysteresis.
+        self.write_reg(Register::ExternalTempCriticalLimit, limit as u8)?;
+        self.write_reg(Register::ExternalTempCriticalHysteresis, hysteresis as u8)?;
+        // Clear AlertMask[4] HIGH_MSK : The External Diode will generate an interrupt if measured temperature
+        // exceeds the External Diode high limit.
+        self.update_reg(Register::AlertMask, 0, 0b0001_0000)?;
+        Ok(self)
+    }
+
+    /// monitor_temp_external_high start monitoring the external temperature and will create
+    /// an alert when the temperature exceeds the high limit.
+    /// The temp_ext_high will be true in Status until the external temperature drops below the high limit.
     pub fn monitor_temp_external_high(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
         // If the measured temperature for the external diode exceeds the External Temperature High limit,
         // then the EXT_HIGH bit is set in the Status Register. It remains set until the external
@@ -197,6 +270,9 @@ where
         Ok(self)
     }
 
+    /// monitor_temp_external_low start monitoring the external temperature and will create
+    /// an alert when the temperature drops below the low limit.
+    /// The temp_ext_low will be true in Status until the external temperature exceeds the low limit.
     pub fn monitor_temp_external_low(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
         // If the measured temperature for the external diode drops below the External Temperature Low limit,
         // then the EXT_LOW bit is set in the Status Register. It remains set until the external
@@ -290,6 +366,7 @@ where
         Ok(self)
     }
 
+    /// get_fan_rpm gives the Fan speed in RPM.
     pub fn get_fan_rpm(&mut self) -> Result<u16, Error<E>> {
         let msb = self.read_reg(Register::TachMSB)?;
         let lsb = self.read_reg(Register::TachLSB)?;
