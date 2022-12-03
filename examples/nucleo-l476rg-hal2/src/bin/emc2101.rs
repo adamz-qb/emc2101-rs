@@ -3,7 +3,7 @@
 
 use nucleo_l476rg as _; // global logger + panicking-behavior + memory layout
 
-// use cortex_m::delay::Delay;
+use cortex_m::delay::Delay;
 
 use stm32_hal2::{
     self,
@@ -19,7 +19,7 @@ use emc2101_driver::{EMC2101, SENSOR_ADDRESS};
 #[cortex_m_rt::entry]
 fn main() -> ! {
     // Set up ARM Cortex-M peripherals. These are common to many MCUs, including all STM32 ones.
-    let mut _cp = cortex_m::Peripherals::take().unwrap();
+    let cp = cortex_m::Peripherals::take().unwrap();
     // Set up peripherals specific to the microcontroller you're using.
     let dp = pac::Peripherals::take().unwrap();
 
@@ -38,8 +38,8 @@ fn main() -> ! {
     clock_cfg.setup().unwrap();
 
     // Setup a delay, based on the Cortex-m systick.
-    // let mut delay = Delay::new(cp.SYST, clock_cfg.systick());
-    // delay.delay_ms(500);
+    let mut delay = Delay::new(cp.SYST, clock_cfg.systick());
+    delay.delay_ms(100);
 
     // Configure pins for I2c.
     defmt::info!("config PB8 as I2C1_SCL");
@@ -65,6 +65,17 @@ fn main() -> ! {
     let mut emc2101 = EMC2101::new(i2c1, SENSOR_ADDRESS).unwrap();
 
     emc2101.enable_tach_input().unwrap();
+
+    let int_temp = emc2101.get_temp_internal().unwrap();
+    defmt::info!("EMC2101 internal temperature = {=i8}", int_temp);
+
+    let status = emc2101.get_status().unwrap();
+    defmt::info!("EMC2101 status = {:?}", status);
+
+    if !status.ext_diode_fault {
+        let ext_temp = emc2101.get_temp_external().unwrap();
+        defmt::info!("EMC2101 external temperature = {=i8}", ext_temp);
+    }
 
     nucleo_l476rg::exit()
 }

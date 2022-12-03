@@ -1,6 +1,8 @@
 #![cfg_attr(not(test), no_std)]
 //! EMC2101 driver.
 
+use defmt::Format;
+
 use embedded_hal::blocking::i2c;
 
 /// EMC2101 sensor's I2C address.
@@ -86,16 +88,16 @@ pub enum Error<E> {
 }
 
 /// Device Satuts.
-#[allow(dead_code)]
+#[derive(Format)]
 pub struct Status {
-    eeprom_error: bool,
-    ext_diode_fault: bool,
-    adc_busy: bool,
-    temp_int_high: bool,
-    temp_ext_high: bool,
-    temp_ext_low: bool,
-    temp_ext_critical: bool,
-    tack_limit: bool,
+    pub eeprom_error: bool,
+    pub ext_diode_fault: bool,
+    pub adc_busy: bool,
+    pub temp_int_high: bool,
+    pub temp_ext_high: bool,
+    pub temp_ext_low: bool,
+    pub temp_ext_critical: bool,
+    pub tack_limit: bool,
 }
 
 /// Look-up Table
