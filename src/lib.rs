@@ -1,8 +1,8 @@
 #![cfg_attr(not(test), no_std)]
 //! EMC2101 driver.
 
-use defmt::Format;
-
+#[cfg(feature = "defmt")]
+use defmt::{debug, error, trace, Format};
 use embedded_hal::blocking::i2c;
 
 /// EMC2101 sensor's I2C address.
@@ -88,7 +88,7 @@ pub enum Error<E> {
 }
 
 /// Device Satuts.
-#[derive(Format)]
+#[cfg_attr(feature = "defmt", derive(Format))]
 pub struct Status {
     pub eeprom_error: bool,
     pub ext_diode_fault: bool,
@@ -129,7 +129,8 @@ where
     /// be `SENSOR_ADDRESS` from this crate.
     pub fn new(i2c: I, address: u8) -> Result<Self, Error<E>> {
         let mut emc2101 = EMC2101 { i2c, address };
-        defmt::trace!("new");
+        #[cfg(feature = "defmt")]
+        trace!("new");
         emc2101.check_id()?;
         // Disable all alerts interrupt, will be enable one by one calling monitor_xxx() functions.
         emc2101.write_reg(Register::AlertMask, 0xFF)?;
@@ -138,7 +139,8 @@ where
 
     /// check_id asks the EMC2101 sensor to report its Product ID.
     fn check_id(&mut self) -> Result<ProductID, Error<E>> {
-        defmt::trace!("check_id");
+        #[cfg(feature = "defmt")]
+        trace!("check_id");
         let product_id_byte = self.read_reg(Register::ProductID)?;
         if product_id_byte == ProductID::EMC2101 as u8 {
             return Ok(ProductID::EMC2101);
@@ -146,13 +148,15 @@ where
         if product_id_byte == ProductID::EMC2101R as u8 {
             return Ok(ProductID::EMC2101R);
         }
-        defmt::error!("Wrong chip ID.");
+        #[cfg(feature = "defmt")]
+        error!("Wrong chip ID.");
         Err(Error::InvalidID)
     }
 
     /// get_status gives the device current status.
     pub fn get_status(&mut self) -> Result<Status, Error<E>> {
-        defmt::trace!("get_status");
+        #[cfg(feature = "defmt")]
+        trace!("get_status");
         let s = self.read_reg(Register::Status)?;
         Ok(Status {
             eeprom_error: s & 0x20 == 0x20,
@@ -172,7 +176,8 @@ where
         rate: ConversionRate,
         filter: FilterLevel,
     ) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("configure_adc");
+        #[cfg(feature = "defmt")]
+        trace!("configure_adc");
         // ConversionRate[3:0] : ADC conversion rate.
         self.write_reg(Register::ConversionRate, rate as u8)?;
         // AveragingFilter[2:1] FILTER[1:0] : control the level of digital filtering
@@ -188,7 +193,8 @@ where
     /// of the ExternalTemperatureForce Register will be used instead of the measured
     /// External Diode temperature as normal.
     pub fn force_temp_external(&mut self, value: i8) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("force_temp_external");
+        #[cfg(feature = "defmt")]
+        trace!("force_temp_external");
         self.write_reg(Register::ExternalTemperatureForce, value as u8)?;
         // Set FanConfig[6] FORCE : the ExternalTemperatureForce Register is used.
         self.update_reg(Register::FanConfig, 0b0100_0000, 0)?;
@@ -198,7 +204,8 @@ where
     /// real_temp_external let the measured External Diode temperature be used to
     /// determine the position in the Fan Control Look-up Table.
     pub fn real_temp_external(&mut self) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("real_temp_external");
+        #[cfg(feature = "defmt")]
+        trace!("real_temp_external");
         // Clear FanConfig[6] FORCE : the ExternalTemperatureForce Register is not used.
         self.update_reg(Register::FanConfig, 0, 0b0100_0000)?;
         Ok(self)
@@ -206,7 +213,8 @@ where
 
     /// get_temp_conversion_rate get the current conversion rate in Hertz.
     pub fn get_temp_conversion_rate(&mut self) -> Result<ConversionRate, Error<E>> {
-        defmt::trace!("get_temp_conversion_rate");
+        #[cfg(feature = "defmt")]
+        trace!("get_temp_conversion_rate");
         let rate: ConversionRate = match self.read_reg(Register::ConversionRate)? {
             0 => ConversionRate::Rate1_16Hz,
             1 => ConversionRate::Rate1_8Hz,
@@ -225,21 +233,24 @@ where
 
     /// get_temp_internal read the internal temperature value in degree Celsius.
     pub fn get_temp_internal(&mut self) -> Result<i8, Error<E>> {
-        defmt::trace!("get_temp_internal");
+        #[cfg(feature = "defmt")]
+        trace!("get_temp_internal");
         let val = self.read_reg(Register::InternalTemperature)?;
         Ok(val as i8)
     }
 
     /// get_temp_external read the external temperature value in degree Celsius.
     pub fn get_temp_external(&mut self) -> Result<i8, Error<E>> {
-        defmt::trace!("get_temp_external");
+        #[cfg(feature = "defmt")]
+        trace!("get_temp_external");
         let val = self.read_reg(Register::ExternalTemperatureMSB)?;
         Ok(val as i8)
     }
 
     /// get_temp_external read the external temperature value in degree Celsius.
     pub fn get_temp_external_precise(&mut self) -> Result<f32, Error<E>> {
-        defmt::trace!("get_temp_external_precise");
+        #[cfg(feature = "defmt")]
+        trace!("get_temp_external_precise");
         let msb = self.read_reg(Register::ExternalTemperatureMSB)?;
         let lsb = self.read_reg(Register::ExternalTemperatureLSB)?;
         let raw: i16 = ((msb as u16) << 8 + lsb) as i16;
@@ -251,7 +262,8 @@ where
     /// an alert when the temperature exceeds the limit.
     /// The temp_int_high will be true in Status until the internal temperature drops below the high limit.
     pub fn monitor_temp_internal_high(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("monitor_temp_internal_high");
+        #[cfg(feature = "defmt")]
+        trace!("monitor_temp_internal_high");
         // If the measured temperature for the internal diode exceeds the Internal Temperature limit,
         // then the INT_HIGH bit is set in the Status Register. It remains set until the internal
         // temperature drops below the high limit.
@@ -271,7 +283,8 @@ where
         limit: i8,
         hysteresis: u8,
     ) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("monitor_temp_external_critical");
+        #[cfg(feature = "defmt")]
+        trace!("monitor_temp_external_critical");
         // If the external diode exceeds the TCRIT Temp limit (even if it does not exceeds the External Diode
         // Temperature Limit), the TCRIT bit is set in the Status Register. It remains set until the external
         // temperature drops below the Critical Limit minus the Critical Hysteresis.
@@ -287,7 +300,8 @@ where
     /// an alert when the temperature exceeds the high limit.
     /// The temp_ext_high will be true in Status until the external temperature drops below the high limit.
     pub fn monitor_temp_external_high(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("monitor_temp_external_high");
+        #[cfg(feature = "defmt")]
+        trace!("monitor_temp_external_high");
         // If the measured temperature for the external diode exceeds the External Temperature High limit,
         // then the EXT_HIGH bit is set in the Status Register. It remains set until the external
         // temperature drops below the high limit.
@@ -302,7 +316,8 @@ where
     /// an alert when the temperature drops below the low limit.
     /// The temp_ext_low will be true in Status until the external temperature exceeds the low limit.
     pub fn monitor_temp_external_low(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("monitor_temp_external_low");
+        #[cfg(feature = "defmt")]
+        trace!("monitor_temp_external_low");
         // If the measured temperature for the external diode drops below the External Temperature Low limit,
         // then the EXT_LOW bit is set in the Status Register. It remains set until the external
         // temperature exceeds the low limit.
@@ -316,7 +331,8 @@ where
     /// enable_alert_output configure ALERT#/TACH pin as open drain active low ALERT# interrupt.
     /// This may require an external pull-up resistor to set the proper signaling levels.
     pub fn enable_alert_output(&mut self) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("enable_alert_output");
+        #[cfg(feature = "defmt")]
+        trace!("enable_alert_output");
         // Clear Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as open drain,
         // active low interrupt.
         // Clear Configuration[7] MASK : The ALERT#/TACH pin will be asserted if any bit is set in the
@@ -327,7 +343,8 @@ where
 
     /// enable_tach_input configure ALERT#/TACH pin as high impedance TACH input.
     pub fn enable_tach_input(&mut self) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("enable_tach_input");
+        #[cfg(feature = "defmt")]
+        trace!("enable_tach_input");
         // Set Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as high impedance TACH input.
         self.update_reg(Register::Configuration, 0b0000_0100, 0)?;
         Ok(self)
@@ -335,7 +352,8 @@ where
 
     /// set_fan_pwm set FAN in PWM mode and configure it's base frequency.
     pub fn set_fan_pwm(&mut self, freq_hz: u32, inverted: bool) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("set_fan_pwm");
+        #[cfg(feature = "defmt")]
+        trace!("set_fan_pwm");
         match freq_hz {
             1_400 => {
                 // Set FanConfig[3] CLK_SEL : The base clock that is used to determine the PWM
@@ -393,7 +411,8 @@ where
                 self.write_reg(Register::PWMFrequencyDivide, pwm_d)?;
             }
             _ => {
-                defmt::error!("Invalid PWM Frequency.");
+                #[cfg(feature = "defmt")]
+                error!("Invalid PWM Frequency.");
                 return Err(Error::InvalidValue);
             }
         }
@@ -404,7 +423,8 @@ where
 
     /// set_fan_dac set FAN in DAC mode.
     pub fn set_fan_dac(&mut self, inverted: bool) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("set_fan_dac");
+        #[cfg(feature = "defmt")]
+        trace!("set_fan_dac");
         // Set Configuration[4] DAC : DAC output enabled at FAN pin.
         self.update_reg(Register::Configuration, 0b0001_0000, 0)?;
         if inverted {
@@ -423,9 +443,11 @@ where
     /// The 'power' must be between 0 and 100%.
     /// If Look-up Table was enabled, it will be disabled and the fixed power value will be used.
     pub fn set_fan_power(&mut self, percent: u8) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("set_fan_power");
+        #[cfg(feature = "defmt")]
+        trace!("set_fan_power");
         if percent > 100 {
-            defmt::error!("Invalid Fan Power.");
+            #[cfg(feature = "defmt")]
+            error!("Invalid Fan Power.");
             return Err(Error::InvalidValue);
         }
         let fan_config: u8 = self.read_reg(Register::FanConfig)?;
@@ -451,7 +473,8 @@ where
     /// Each level temperature must be between 0 and 127 degrees Celsius.
     /// Each level power must be between 0 and 100%.
     pub fn set_fan_lut(&mut self, lut: &[Level], hysteresis: u8) -> Result<&mut Self, Error<E>> {
-        defmt::trace!("set_fan_lut");
+        #[cfg(feature = "defmt")]
+        trace!("set_fan_lut");
         if lut.len() > 8 || lut.len() == 0 {
             return Err(Error::InvalidSize);
         }
@@ -497,7 +520,8 @@ where
 
     /// get_fan_rpm gives the Fan speed in RPM.
     pub fn get_fan_rpm(&mut self) -> Result<u16, Error<E>> {
-        defmt::trace!("get_fan_rpm");
+        #[cfg(feature = "defmt")]
+        trace!("get_fan_rpm");
         let msb = self.read_reg(Register::TachMSB)?;
         let lsb = self.read_reg(Register::TachLSB)?;
         let raw: u16 = (msb as u16) << 8 + (lsb as u16);
@@ -509,21 +533,25 @@ where
 
     /// read_reg read a register value.
     fn read_reg<R: Into<u8>>(&mut self, reg: R) -> Result<u8, Error<E>> {
-        defmt::trace!("read_reg");
+        #[cfg(feature = "defmt")]
+        trace!("read_reg");
         let mut buf = [0x00];
         let reg = reg.into();
         self.i2c
             .write_read(self.address, &[reg], &mut buf)
             .map_err(Error::I2c)?;
-        defmt::debug!("R @0x{:x}={:x}", reg, buf[0]);
+        #[cfg(feature = "defmt")]
+        debug!("R @0x{:x}={:x}", reg, buf[0]);
         Ok(buf[0])
     }
 
     /// write_reg blindly write a single register with a fixed value.
     fn write_reg<R: Into<u8>>(&mut self, reg: R, value: u8) -> Result<(), Error<E>> {
-        defmt::trace!("write_reg");
+        #[cfg(feature = "defmt")]
+        trace!("write_reg");
         let reg = reg.into();
-        defmt::debug!("W @0x{:x}={:x}", reg, value);
+        #[cfg(feature = "defmt")]
+        debug!("W @0x{:x}={:x}", reg, value);
         self.i2c
             .write(self.address, &[reg, value])
             .map_err(Error::I2c)?;
@@ -538,7 +566,8 @@ where
         mask_set: u8,
         mask_clear: u8,
     ) -> Result<(), Error<E>> {
-        defmt::trace!("update_reg");
+        #[cfg(feature = "defmt")]
+        trace!("update_reg");
         let current = self.read_reg(reg.clone())?;
         let updated = current | mask_set & !mask_clear;
         if current != updated {
