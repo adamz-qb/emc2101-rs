@@ -102,8 +102,8 @@ pub struct Status {
 
 /// Look-up Table
 pub struct Level {
-    temp: u8,
-    percent: u8,
+    pub temp: u8,
+    pub percent: u8,
 }
 
 /// An EMC2101 sensor on the I2C bus `I`.
