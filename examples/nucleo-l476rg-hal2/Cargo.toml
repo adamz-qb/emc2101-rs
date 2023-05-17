@@ -19,7 +19,7 @@ defmt = "0.3"
 defmt-rtt = "0.4"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 stm32-hal2 = { version = "1.5.5", features = ["l4x6", "l4rt", "embedded_hal"] }
-emc2101-driver = { path = "../.." }
+emc2101-driver = { path = "../..", features = ["defmt"] }
 
 [dev-dependencies]
 defmt-test = "0.3"
