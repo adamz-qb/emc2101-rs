@@ -4,6 +4,7 @@
 #[cfg(feature = "defmt")]
 use defmt::{debug, error, trace, Format};
 use embedded_hal::blocking::i2c;
+use fugit::HertzU32;
 
 /// EMC2101 sensor's I2C address.
 pub const DEFAULT_ADDRESS: u8 = 0b0100_1100; // This is I2C address 0x4C;
@@ -353,10 +354,14 @@ where
     }
 
     /// set_fan_pwm set FAN in PWM mode and configure it's base frequency.
-    pub fn set_fan_pwm(&mut self, freq_hz: u32, inverted: bool) -> Result<&mut Self, Error<E>> {
+    pub fn set_fan_pwm(
+        &mut self,
+        frequency: HertzU32,
+        inverted: bool,
+    ) -> Result<&mut Self, Error<E>> {
         #[cfg(feature = "defmt")]
         trace!("set_fan_pwm");
-        match freq_hz {
+        match frequency.raw() {
             1_400 => {
                 // Set FanConfig[3] CLK_SEL : The base clock that is used to determine the PWM
                 // frequency is 1.4kHz.
@@ -401,7 +406,7 @@ where
                 }
                 // The PWM frequency when the PWMFrequencyDivide Register is used is shown in equation :
                 // PWM_D = (360k / (2 * PWM_F * FREQ))
-                let div: u16 = (160_000u32 / freq_hz) as u16;
+                let div: u16 = (160_000u32 / frequency.raw()) as u16;
                 let pwm_f: u8 = (div >> 8) as u8 & 0x1F;
                 let pwm_d: u8 = (div & 0xFF) as u8;
                 // The PWMFrequency Register determines the final PWM frequency and "effective resolution"

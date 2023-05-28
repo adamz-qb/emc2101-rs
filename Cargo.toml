@@ -12,10 +12,11 @@ repository = "https://github.com/Georges760/emc2101-rs"
 [dependencies]
 defmt = { version = "0.3.2", optional = true }
 embedded-hal = "0.2.7"
+fugit = "0.3.6"
 
 [dev-dependencies]
 defmt = { version = "0.3.2", features = ["unstable-test"] }
 embedded-hal-mock = "0.9.0"
 
 [features]
-defmt = ["dep:defmt"]
+defmt = ["dep:defmt", "fugit/defmt"]
