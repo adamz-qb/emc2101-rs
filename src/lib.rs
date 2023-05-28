@@ -6,7 +6,7 @@ use defmt::{debug, error, trace, Format};
 use embedded_hal::blocking::i2c;
 
 /// EMC2101 sensor's I2C address.
-pub const SENSOR_ADDRESS: u8 = 0b0100_1100; // This is I2C address 0x4C;
+pub const DEFAULT_ADDRESS: u8 = 0b0100_1100; // This is I2C address 0x4C;
 
 /// EMC2101 sensor's Product ID.
 pub enum ProductID {
@@ -108,7 +108,7 @@ pub struct Level {
 
 /// An EMC2101 sensor on the I2C bus `I`.
 ///
-/// The address of the sensor will be `SENSOR_ADDRESS` from this package, unless there is some kind
+/// The address of the sensor will be `DEFAULT_ADDRESS` from this package, unless there is some kind
 /// of special address translating hardware in use.
 pub struct EMC2101<I>
 where
@@ -124,10 +124,9 @@ where
 {
     /// Initializes the EMC2101 driver.
     ///
-    /// This consumes the I2C bus `I`. Before you can get temperature and fan measurements,
-    /// you must call the `init` method which calibrates the sensor. The address will almost always
-    /// be `SENSOR_ADDRESS` from this crate.
-    pub fn new(i2c: I, address: u8) -> Result<Self, Error<E>> {
+    /// This consumes the I2C bus `I`. The address will almost always
+    /// be `DEFAULT_ADDRESS` from this crate.
+    pub fn new_with_address(i2c: I, address: u8) -> Result<Self, Error<E>> {
         let mut emc2101 = EMC2101 { i2c, address };
         #[cfg(feature = "defmt")]
         trace!("new");
@@ -135,6 +134,9 @@ where
         // Disable all alerts interrupt, will be enable one by one calling monitor_xxx() functions.
         emc2101.write_reg(Register::AlertMask, 0xFF)?;
         Ok(emc2101)
+    }
+    pub fn new(i2c: I) -> Result<Self, Error<E>> {
+        EMC2101::new_with_address(i2c, DEFAULT_ADDRESS)
     }
 
     /// check_id asks the EMC2101 sensor to report its Product ID.
@@ -582,7 +584,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{EMC2101, SENSOR_ADDRESS};
+    use super::{DEFAULT_ADDRESS, EMC2101};
     use embedded_hal_mock::i2c::Mock as I2cMock;
     use embedded_hal_mock::i2c::Transaction;
 
@@ -594,18 +596,21 @@ mod tests {
     fn emc2101_new() {
         let expectations = vec![
             Transaction::write_read(
-                SENSOR_ADDRESS,
+                DEFAULT_ADDRESS,
                 vec![super::Register::ProductID as u8],
                 vec![super::ProductID::EMC2101 as u8],
             ),
-            Transaction::write(SENSOR_ADDRESS, vec![super::Register::AlertMask as u8, 0xFF]),
+            Transaction::write(
+                DEFAULT_ADDRESS,
+                vec![super::Register::AlertMask as u8, 0xFF],
+            ),
         ];
         // In the real app we'd used shared-bus to share the i2c bus between the two drivers, but
         // I think this is fine for a test.
         let mock_i2c_1 = I2cMock::new(&expectations);
         let mock_i2c_2 = I2cMock::new(&expectations);
 
-        let _emc2101_1 = EMC2101::new(mock_i2c_1, SENSOR_ADDRESS).unwrap();
-        let _emc2101_2 = EMC2101::new(mock_i2c_2, SENSOR_ADDRESS).unwrap();
+        let _emc2101_1 = EMC2101::new(mock_i2c_1).unwrap();
+        let _emc2101_2 = EMC2101::new(mock_i2c_2).unwrap();
     }
 }
