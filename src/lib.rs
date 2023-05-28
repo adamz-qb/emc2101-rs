@@ -461,7 +461,7 @@ where
             // will not be used.
             self.write_reg(Register::FanConfig, fan_config | 0x20)?;
         }
-        let val: u8 = (percent * 64 / 100) as u8;
+        let val: u8 = percent * 64 / 100;
         // The FanSetting Register drives the fan driver when the Fan Control Look-Up
         // Table is not used.
         // Any data written to the FanSetting register is applied immediately to the
@@ -506,7 +506,7 @@ where
             }
             last_temp = level.temp;
             self.write_reg((Register::FanControlLUTT1 as u8) + 2 * index, level.temp)?;
-            let power: u8 = (level.percent * 64 / 100) as u8;
+            let power: u8 = level.percent * 64 / 100;
             self.write_reg((Register::FanControlLUTS1 as u8) + 2 * index, power)?;
         }
         // FanControlLUTHysteresis determines the amount of hysteresis applied to the temperature
