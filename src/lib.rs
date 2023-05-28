@@ -71,7 +71,7 @@ impl From<Register> for u8 {
 }
 
 /// Driver errors.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error<E> {
     /// I2C bus error.
     I2c(E),
@@ -253,7 +253,7 @@ where
         trace!("get_temp_external_precise");
         let msb = self.read_reg(Register::ExternalTemperatureMSB)?;
         let lsb = self.read_reg(Register::ExternalTemperatureLSB)?;
-        let raw: i16 = ((msb as u16) << 8 + lsb) as i16;
+        let raw: i16 = (((msb as u16) << 8) + lsb as u16) as i16;
         let ret: f32 = (raw >> 5) as f32 * 0.125;
         Ok(ret)
     }
@@ -475,7 +475,7 @@ where
     pub fn set_fan_lut(&mut self, lut: &[Level], hysteresis: u8) -> Result<&mut Self, Error<E>> {
         #[cfg(feature = "defmt")]
         trace!("set_fan_lut");
-        if lut.len() > 8 || lut.len() == 0 {
+        if lut.len() > 8 || lut.is_empty() {
             return Err(Error::InvalidSize);
         }
         if hysteresis > 31 {
@@ -492,22 +492,20 @@ where
             self.write_reg(Register::FanConfig, fan_config | 0x20)?;
         }
         let mut last_temp: u8 = 0;
-        let mut index: u8 = 0;
-        for l in lut {
-            if l.temp > 127 {
+        for (index, level) in (0_u8..).zip(lut.iter()) {
+            if level.temp > 127 {
                 return Err(Error::InvalidValue);
             }
-            if l.percent > 100 {
+            if level.percent > 100 {
                 return Err(Error::InvalidValue);
             }
-            if l.temp <= last_temp {
+            if level.temp <= last_temp {
                 return Err(Error::InvalidSorting);
             }
-            last_temp = l.temp;
-            self.write_reg((Register::FanControlLUTT1 as u8) + 2 * index, l.temp)?;
-            let power: u8 = (l.percent * 64 / 100) as u8;
+            last_temp = level.temp;
+            self.write_reg((Register::FanControlLUTT1 as u8) + 2 * index, level.temp)?;
+            let power: u8 = (level.percent * 64 / 100) as u8;
             self.write_reg((Register::FanControlLUTS1 as u8) + 2 * index, power)?;
-            index += 1;
         }
         // FanControlLUTHysteresis determines the amount of hysteresis applied to the temperature
         // inputs of the fan control Fan Control Look-Up Table.
@@ -524,7 +522,7 @@ where
         trace!("get_fan_rpm");
         let msb = self.read_reg(Register::TachMSB)?;
         let lsb = self.read_reg(Register::TachLSB)?;
-        let raw: u16 = (msb as u16) << 8 + (lsb as u16);
+        let raw: u16 = ((msb as u16) << 8) + (lsb as u16);
         if raw == 0xFFFF {
             return Ok(0);
         }
