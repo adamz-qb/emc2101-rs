@@ -1,5 +1,5 @@
 [package]
-name = "emc2101-driver"
+name = "emc2101-rs"
 authors = ["Georges Palauqui <g.palauqui@gptechinno.com>"]
 version = "0.1.0"
 edition = "2021"
