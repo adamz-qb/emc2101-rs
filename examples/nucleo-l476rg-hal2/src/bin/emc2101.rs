@@ -14,7 +14,7 @@ use stm32_hal2::{
     pac,
 };
 
-use emc2101_driver::{EMC2101, SENSOR_ADDRESS};
+use emc2101_rs::EMC2101;
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
@@ -62,7 +62,7 @@ fn main() -> ! {
     let i2c1 = I2c::new(dp.I2C1, i2c_cfg, &clock_cfg);
 
     defmt::info!("config EMC2101 on I2C1");
-    let mut emc2101 = EMC2101::new(i2c1, SENSOR_ADDRESS).unwrap();
+    let mut emc2101 = EMC2101::new(i2c1).unwrap();
 
     emc2101.enable_tach_input().unwrap();
 
