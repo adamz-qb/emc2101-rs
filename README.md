@@ -1,4 +1,4 @@
-# `emc2101-rs`
+# `emc2101`
 
 [![Crate][crate-image]][crate-link]
 [![Docs][docs-image]][docs-link]
@@ -26,10 +26,10 @@ Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall
 be dual licensed as above, without any additional terms or conditions.
 
-[crate-image]: https://img.shields.io/crates/v/emc2101-rs.svg
-[crate-link]: https://crates.io/crates/emc2101-rs
-[docs-image]: https://docs.rs/emc2101-rs/badge.svg
-[docs-link]: https://docs.rs/emc2101-rs/
+[crate-image]: https://img.shields.io/crates/v/emc2101.svg
+[crate-link]: https://crates.io/crates/emc2101
+[docs-image]: https://docs.rs/emc2101/badge.svg
+[docs-link]: https://docs.rs/emc2101/
 [license-image]: https://img.shields.io/badge/license-Apache2.0/MIT-blue.svg
 [product-page]: https://www.microchip.com/en-us/product/EMC2101
 [datasheet]: https://ww1.microchip.com/downloads/aemDocuments/documents/MSLD/ProductDocuments/DataSheets/EMC2101-Data-Sheet-DS20006703.pdf
