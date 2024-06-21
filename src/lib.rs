@@ -8,7 +8,7 @@ use defmt::{debug, error, trace, Format};
 compile_error!("feature \"blocking\" and feature \"async\" cannot be enabled at the same time");
 
 #[cfg(feature = "blocking")]
-use embedded_hal::blocking::i2c::{Write, WriteRead};
+use embedded_hal::i2c::I2c;
 #[cfg(feature = "async")]
 use embedded_hal_async::i2c::I2c;
 
@@ -125,16 +125,10 @@ pub struct EMC2101<I> {
     address: u8,
 }
 
-#[maybe_async_cfg::maybe(
-    sync(feature = "blocking", keep_self),
-    async(
-        feature = "async",
-        idents(Write(async = "I2c"), WriteRead(async = "I2c"))
-    )
-)]
+#[maybe_async_cfg::maybe(sync(feature = "blocking", keep_self), async(feature = "async"))]
 impl<I, E> EMC2101<I>
 where
-    I: Write<Error = E> + WriteRead<Error = E>,
+    I: I2c<Error = E>,
 {
     /// Initializes the EMC2101 driver.
     ///
