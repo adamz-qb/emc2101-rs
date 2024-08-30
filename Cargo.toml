@@ -1,24 +1,26 @@
 [package]
-name = "emc2101"
 authors = ["Georges Palauqui <g.palauqui@gptechinno.com>"]
-version = "0.3.0"
-edition = "2021"
-rust-version = "1.65"
-license = "MIT OR Apache-2.0"
 categories = ["embedded", "hardware-support", "no-std"]
-keywords = ["no-std", "embedded-hal-driver", "sensor", "temperature", "fan"]
 description = "Rust embedded-hal or embedded-hal-async driver for the EMC2101 temperature sensor and fan sensor/controler."
+edition = "2021"
+keywords = ["no-std", "embedded-hal-driver", "sensor", "temperature", "fan"]
+license = "MIT OR Apache-2.0"
+name = "emc2101"
 repository = "https://github.com/Georges760/emc2101-rs"
+rust-version = "1.71.1"
+version = "0.4.0"
 
 [dependencies]
-defmt = { version = "0.3.8", optional = true }
-embedded-hal = { version = "1.0.0", optional = true }
-embedded-hal-async = { version = "1.0.0", optional = true }
-fugit = "0.3.7"
-maybe-async-cfg = "0.2.4"
+defmt = { version = "0.3", optional = true }
+embedded-hal = { version = "1.0" }
+embedded-hal-async = { version = "1.0", optional = true }
+fugit = "0.3"
+heapless = "0.8"
+log = { version = "0.4", optional = true }
+maybe-async-cfg = "0.2"
 
 [features]
-defmt = ["dep:defmt", "fugit/defmt"]
 async = ["dep:embedded-hal-async"]
-blocking = ["dep:embedded-hal"]
-default = ["blocking"]
+default = ["sync"]
+defmt-03 = ["dep:defmt", "fugit/defmt", "heapless/defmt-03"]
+sync = []

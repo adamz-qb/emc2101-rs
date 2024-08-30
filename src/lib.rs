@@ -1,29 +1,45 @@
+//! A platform agnostic Rust driver for EMC2101, based on the
+//! [`embedded-hal`](https://github.com/rust-embedded/embedded-hal) traits.
+
 #![no_std]
-//! EMC2101 driver.
+#![macro_use]
+pub(crate) mod fmt;
 
-#[cfg(feature = "defmt")]
-use defmt::{debug, error, trace, Format};
+mod error;
+pub use error::{Error, Result};
 
-#[cfg(all(feature = "blocking", feature = "async"))]
-compile_error!("feature \"blocking\" and feature \"async\" cannot be enabled at the same time");
-
-#[cfg(feature = "blocking")]
+#[cfg(any(feature = "async", feature = "sync"))]
+use embedded_hal::i2c::ErrorType;
+#[cfg(feature = "sync")]
 use embedded_hal::i2c::I2c;
 #[cfg(feature = "async")]
-use embedded_hal_async::i2c::I2c;
+use embedded_hal_async::i2c::I2c as AsyncI2c;
 
+#[cfg(any(feature = "async", feature = "sync"))]
 use fugit::HertzU32;
+#[cfg(any(feature = "async", feature = "sync"))]
+use heapless::Vec;
 
 /// EMC2101 sensor's I2C address.
 pub const DEFAULT_ADDRESS: u8 = 0b0100_1100; // This is I2C address 0x4C;
 
-/// EMC2101 sensor's Product ID.
-pub enum ProductID {
-    PidEMC2101 = 0x16,
-    PidEMC2101R = 0x28,
+#[cfg(any(feature = "async", feature = "sync"))]
+const EMC2101_PRODUCT_ID: u8 = 0x16;
+#[cfg(any(feature = "async", feature = "sync"))]
+const EMC2101R_PRODUCT_ID: u8 = 0x28;
+
+/// EMC2101 sensor's Product.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
+pub enum Product {
+    EMC2101,
+    EMC2101R,
 }
 
 /// ADC Conversion Rates.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
+#[repr(u8)]
 pub enum ConversionRate {
     Rate1_16Hz = 0,
     Rate1_8Hz = 1,
@@ -38,6 +54,9 @@ pub enum ConversionRate {
 }
 
 /// ADC Filter Levels.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
+#[repr(u8)]
 pub enum FilterLevel {
     Disabled = 0,
     Level1 = 1,
@@ -45,6 +64,7 @@ pub enum FilterLevel {
 }
 
 /// Registers of the EMC2101 sensor.
+#[cfg(any(feature = "async", feature = "sync"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Register {
     InternalTemperature = 0x00,
@@ -73,31 +93,16 @@ enum Register {
     ProductID = 0xFD,
 }
 
+#[cfg(any(feature = "async", feature = "sync"))]
 impl From<Register> for u8 {
     fn from(r: Register) -> u8 {
         r as u8
     }
 }
 
-/// Driver errors.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Error<E> {
-    /// I2C bus error.
-    I2c(E),
-    /// The device Product ID is not supported.
-    InvalidID,
-    /// The given Value is not valid.
-    InvalidValue,
-    /// The given array as an invalid size.
-    InvalidSize,
-    /// The given array is not sorted.
-    InvalidSorting,
-    /// Errors such as overflowing the stack.
-    Internal,
-}
-
 /// Device Satuts.
-#[cfg_attr(feature = "defmt", derive(Format))]
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
 pub struct Status {
     pub eeprom_error: bool,
     pub ext_diode_fault: bool,
@@ -109,7 +114,24 @@ pub struct Status {
     pub tack_limit: bool,
 }
 
-/// Look-up Table
+impl From<u8> for Status {
+    fn from(s: u8) -> Self {
+        Self {
+            eeprom_error: s & 0x20 == 0x20,
+            ext_diode_fault: s & 0x04 == 0x04,
+            adc_busy: s & 0x80 == 0x80,
+            temp_int_high: s & 0x40 == 0x40,
+            temp_ext_high: s & 0x10 == 0x10,
+            temp_ext_low: s & 0x08 == 0x08,
+            temp_ext_critical: s & 0x02 == 0x02,
+            tack_limit: s & 0x01 == 0x01,
+        }
+    }
+}
+
+/// Look-up Table Level
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
 pub struct Level {
     pub temp: u8,
     pub percent: u8,
@@ -119,65 +141,55 @@ pub struct Level {
 ///
 /// The address of the sensor will be `DEFAULT_ADDRESS` from this package,
 /// unless there is some kind of special address translating hardware in use.
-#[maybe_async_cfg::maybe(sync(feature = "blocking", keep_self), async(feature = "async"))]
-pub struct EMC2101<I> {
+#[maybe_async_cfg::maybe(
+    sync(feature = "sync", self = "EMC2101"),
+    async(feature = "async", keep_self)
+)]
+pub struct AsyncEMC2101<I> {
     i2c: I,
     address: u8,
+    variant: Option<Product>,
 }
 
-#[maybe_async_cfg::maybe(sync(feature = "blocking", keep_self), async(feature = "async"))]
-impl<I, E> EMC2101<I>
-where
-    I: I2c<Error = E>,
-{
+#[maybe_async_cfg::maybe(
+    sync(feature = "sync", self = "EMC2101", idents(AsyncI2c(sync = "I2c"))),
+    async(feature = "async", keep_self)
+)]
+impl<I: AsyncI2c + ErrorType> AsyncEMC2101<I> {
     /// Initializes the EMC2101 driver.
     ///
     /// This consumes the I2C bus `I`. The address will almost always
     /// be `DEFAULT_ADDRESS` from this crate.
-    pub async fn new_with_address(i2c: I, address: u8) -> Result<Self, Error<E>> {
-        let mut emc2101 = EMC2101 { i2c, address };
-        #[cfg(feature = "defmt")]
+    pub async fn with_address(i2c: I, address: u8) -> Result<Self, I::Error> {
+        let mut emc2101 = AsyncEMC2101 {
+            i2c,
+            address,
+            variant: None,
+        };
         trace!("new");
-        emc2101.check_id().await?;
+        emc2101.variant = Some(emc2101.check_id().await?);
         // Disable all alerts interrupt, will be enable one by one calling monitor_xxx() functions.
         emc2101.write_reg(Register::AlertMask, 0xFF).await?;
         Ok(emc2101)
     }
-    pub async fn new(i2c: I) -> Result<Self, Error<E>> {
-        EMC2101::new_with_address(i2c, DEFAULT_ADDRESS).await
+    pub async fn new(i2c: I) -> Result<Self, I::Error> {
+        AsyncEMC2101::with_address(i2c, DEFAULT_ADDRESS).await
     }
 
-    /// check_id asks the EMC2101 sensor to report its Product ID.
-    async fn check_id(&mut self) -> Result<ProductID, Error<E>> {
-        #[cfg(feature = "defmt")]
+    /// check_id asks the EMC2101 sensor to report its Product.
+    async fn check_id(&mut self) -> Result<Product, I::Error> {
         trace!("check_id");
-        let product_id_byte = self.read_reg(Register::ProductID).await?;
-        if product_id_byte == ProductID::PidEMC2101 as u8 {
-            return Ok(ProductID::PidEMC2101);
+        match self.read_reg(Register::ProductID).await? {
+            EMC2101_PRODUCT_ID => Ok(Product::EMC2101),
+            EMC2101R_PRODUCT_ID => Ok(Product::EMC2101R),
+            _ => Err(Error::InvalidID),
         }
-        if product_id_byte == ProductID::PidEMC2101R as u8 {
-            return Ok(ProductID::PidEMC2101R);
-        }
-        #[cfg(feature = "defmt")]
-        error!("Wrong chip ID.");
-        Err(Error::InvalidID)
     }
 
-    /// get_status gives the device current status.
-    pub async fn get_status(&mut self) -> Result<Status, Error<E>> {
-        #[cfg(feature = "defmt")]
-        trace!("get_status");
-        let s = self.read_reg(Register::Status).await?;
-        Ok(Status {
-            eeprom_error: s & 0x20 == 0x20,
-            ext_diode_fault: s & 0x04 == 0x04,
-            adc_busy: s & 0x80 == 0x80,
-            temp_int_high: s & 0x40 == 0x40,
-            temp_ext_high: s & 0x10 == 0x10,
-            temp_ext_low: s & 0x08 == 0x08,
-            temp_ext_critical: s & 0x02 == 0x02,
-            tack_limit: s & 0x01 == 0x01,
-        })
+    /// status gives the device current status.
+    pub async fn status(&mut self) -> Result<Status, I::Error> {
+        trace!("status");
+        Ok(self.read_reg(Register::Status).await?.into())
     }
 
     /// configure_adc set the conversion rate in Hertz and the filter level.
@@ -185,8 +197,7 @@ where
         &mut self,
         rate: ConversionRate,
         filter: FilterLevel,
-    ) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    ) -> Result<&mut Self, I::Error> {
         trace!("configure_adc");
         // ConversionRate[3:0] : ADC conversion rate.
         self.write_reg(Register::ConversionRate, rate as u8).await?;
@@ -203,8 +214,7 @@ where
     /// When determining the position of the Fan Control Look-up Table, the contents
     /// of the ExternalTemperatureForce Register will be used instead of the measured
     /// External Diode temperature as normal.
-    pub async fn force_temp_external(&mut self, value: i8) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    pub async fn force_temp_external(&mut self, value: i8) -> Result<&mut Self, I::Error> {
         trace!("force_temp_external");
         self.write_reg(Register::ExternalTemperatureForce, value as u8)
             .await?;
@@ -215,18 +225,16 @@ where
 
     /// real_temp_external let the measured External Diode temperature be used to
     /// determine the position in the Fan Control Look-up Table.
-    pub async fn real_temp_external(&mut self) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    pub async fn real_temp_external(&mut self) -> Result<&mut Self, I::Error> {
         trace!("real_temp_external");
         // Clear FanConfig[6] FORCE : the ExternalTemperatureForce Register is not used.
         self.update_reg(Register::FanConfig, 0, 0b0100_0000).await?;
         Ok(self)
     }
 
-    /// get_temp_conversion_rate get the current conversion rate in Hertz.
-    pub async fn get_temp_conversion_rate(&mut self) -> Result<ConversionRate, Error<E>> {
-        #[cfg(feature = "defmt")]
-        trace!("get_temp_conversion_rate");
+    /// temp_conversion_rate get the current conversion rate in Hertz.
+    pub async fn temp_conversion_rate(&mut self) -> Result<ConversionRate, I::Error> {
+        trace!("temp_conversion_rate");
         let rate: ConversionRate = match self.read_reg(Register::ConversionRate).await? {
             0 => ConversionRate::Rate1_16Hz,
             1 => ConversionRate::Rate1_8Hz,
@@ -243,26 +251,21 @@ where
         Ok(rate)
     }
 
-    /// get_temp_internal read the internal temperature value in degree Celsius.
-    pub async fn get_temp_internal(&mut self) -> Result<i8, Error<E>> {
-        #[cfg(feature = "defmt")]
-        trace!("get_temp_internal");
-        let val = self.read_reg(Register::InternalTemperature).await?;
-        Ok(val as i8)
+    /// temp_internal read the internal temperature value in degree Celsius.
+    pub async fn temp_internal(&mut self) -> Result<i8, I::Error> {
+        trace!("temp_internal");
+        Ok(self.read_reg(Register::InternalTemperature).await? as i8)
     }
 
-    /// get_temp_external read the external temperature value in degree Celsius.
-    pub async fn get_temp_external(&mut self) -> Result<i8, Error<E>> {
-        #[cfg(feature = "defmt")]
-        trace!("get_temp_external");
-        let val = self.read_reg(Register::ExternalTemperatureMSB).await?;
-        Ok(val as i8)
+    /// temp_external read the external temperature value in degree Celsius.
+    pub async fn temp_external(&mut self) -> Result<i8, I::Error> {
+        trace!("temp_external");
+        Ok(self.read_reg(Register::ExternalTemperatureMSB).await? as i8)
     }
 
-    /// get_temp_external read the external temperature value in degree Celsius.
-    pub async fn get_temp_external_precise(&mut self) -> Result<f32, Error<E>> {
-        #[cfg(feature = "defmt")]
-        trace!("get_temp_external_precise");
+    /// temp_external_precise read the external temperature value in degree Celsius.
+    pub async fn temp_external_precise(&mut self) -> Result<f32, I::Error> {
+        trace!("temp_external_precise");
         let msb = self.read_reg(Register::ExternalTemperatureMSB).await?;
         let lsb = self.read_reg(Register::ExternalTemperatureLSB).await?;
         let raw: i16 = (((msb as u16) << 8) + lsb as u16) as i16;
@@ -273,8 +276,7 @@ where
     /// monitor_temp_internal_high start monitoring the internal temperature and will create
     /// an alert when the temperature exceeds the limit.
     /// The temp_int_high will be true in Status until the internal temperature drops below the high limit.
-    pub async fn monitor_temp_internal_high(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    pub async fn monitor_temp_internal_high(&mut self, limit: i8) -> Result<&mut Self, I::Error> {
         trace!("monitor_temp_internal_high");
         // If the measured temperature for the internal diode exceeds the Internal Temperature limit,
         // then the INT_HIGH bit is set in the Status Register. It remains set until the internal
@@ -295,8 +297,7 @@ where
         &mut self,
         limit: i8,
         hysteresis: u8,
-    ) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    ) -> Result<&mut Self, I::Error> {
         trace!("monitor_temp_external_critical");
         // If the external diode exceeds the TCRIT Temp limit (even if it does not exceeds the External Diode
         // Temperature Limit), the TCRIT bit is set in the Status Register. It remains set until the external
@@ -314,8 +315,7 @@ where
     /// monitor_temp_external_high start monitoring the external temperature and will create
     /// an alert when the temperature exceeds the high limit.
     /// The temp_ext_high will be true in Status until the external temperature drops below the high limit.
-    pub async fn monitor_temp_external_high(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    pub async fn monitor_temp_external_high(&mut self, limit: i8) -> Result<&mut Self, I::Error> {
         trace!("monitor_temp_external_high");
         // If the measured temperature for the external diode exceeds the External Temperature High limit,
         // then the EXT_HIGH bit is set in the Status Register. It remains set until the external
@@ -331,8 +331,7 @@ where
     /// monitor_temp_external_low start monitoring the external temperature and will create
     /// an alert when the temperature drops below the low limit.
     /// The temp_ext_low will be true in Status until the external temperature exceeds the low limit.
-    pub async fn monitor_temp_external_low(&mut self, limit: i8) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    pub async fn monitor_temp_external_low(&mut self, limit: i8) -> Result<&mut Self, I::Error> {
         trace!("monitor_temp_external_low");
         // If the measured temperature for the external diode drops below the External Temperature Low limit,
         // then the EXT_LOW bit is set in the Status Register. It remains set until the external
@@ -347,8 +346,7 @@ where
 
     /// enable_alert_output configure ALERT#/TACH pin as open drain active low ALERT# interrupt.
     /// This may require an external pull-up resistor to set the proper signaling levels.
-    pub async fn enable_alert_output(&mut self) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    pub async fn enable_alert_output(&mut self) -> Result<&mut Self, I::Error> {
         trace!("enable_alert_output");
         // Clear Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as open drain,
         // active low interrupt.
@@ -360,8 +358,7 @@ where
     }
 
     /// enable_tach_input configure ALERT#/TACH pin as high impedance TACH input.
-    pub async fn enable_tach_input(&mut self) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    pub async fn enable_tach_input(&mut self) -> Result<&mut Self, I::Error> {
         trace!("enable_tach_input");
         // Set Configuration[2] ALT_TCH : The ALERT#/TACH pin will function as high impedance TACH input.
         self.update_reg(Register::Configuration, 0b0000_0100, 0)
@@ -374,8 +371,7 @@ where
         &mut self,
         frequency: HertzU32,
         inverted: bool,
-    ) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    ) -> Result<&mut Self, I::Error> {
         trace!("set_fan_pwm");
         match frequency.raw() {
             1_400 => {
@@ -439,7 +435,6 @@ where
                 self.write_reg(Register::PWMFrequencyDivide, pwm_d).await?;
             }
             _ => {
-                #[cfg(feature = "defmt")]
                 error!("Invalid PWM Frequency.");
                 return Err(Error::InvalidValue);
             }
@@ -451,8 +446,7 @@ where
     }
 
     /// set_fan_dac set FAN in DAC mode.
-    pub async fn set_fan_dac(&mut self, inverted: bool) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    pub async fn set_fan_dac(&mut self, inverted: bool) -> Result<&mut Self, I::Error> {
         trace!("set_fan_dac");
         // Set Configuration[4] DAC : DAC output enabled at FAN pin.
         self.update_reg(Register::Configuration, 0b0001_0000, 0)
@@ -472,11 +466,9 @@ where
     /// set_fan_power set the FAN power in percent (for both modes PWM/DAC).
     /// The 'power' must be between 0 and 100%.
     /// If Look-up Table was enabled, it will be disabled and the fixed power value will be used.
-    pub async fn set_fan_power(&mut self, percent: u8) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    pub async fn set_fan_power(&mut self, percent: u8) -> Result<&mut Self, I::Error> {
         trace!("set_fan_power");
         if percent > 100 {
-            #[cfg(feature = "defmt")]
             error!("Invalid Fan Power.");
             return Err(Error::InvalidValue);
         }
@@ -505,12 +497,11 @@ where
     /// Each level power must be between 0 and 100%.
     pub async fn set_fan_lut(
         &mut self,
-        lut: &[Level],
+        lut: Vec<Level, 8>,
         hysteresis: u8,
-    ) -> Result<&mut Self, Error<E>> {
-        #[cfg(feature = "defmt")]
+    ) -> Result<&mut Self, I::Error> {
         trace!("set_fan_lut");
-        if lut.len() > 8 || lut.is_empty() {
+        if lut.is_empty() {
             return Err(Error::InvalidSize);
         }
         if hysteresis > 31 {
@@ -556,22 +547,21 @@ where
         Ok(self)
     }
 
-    /// get_fan_rpm gives the Fan speed in RPM.
-    pub async fn get_fan_rpm(&mut self) -> Result<u16, Error<E>> {
-        #[cfg(feature = "defmt")]
-        trace!("get_fan_rpm");
+    /// fan_rpm gives the Fan speed in RPM.
+    pub async fn fan_rpm(&mut self) -> Result<u16, I::Error> {
+        trace!("fan_rpm");
         let msb = self.read_reg(Register::TachMSB).await?;
         let lsb = self.read_reg(Register::TachLSB).await?;
         let raw: u16 = ((msb as u16) << 8) + (lsb as u16);
-        if raw == 0xFFFF {
-            return Ok(0);
-        }
-        Ok((5_400_000u32 / (raw as u32)) as u16)
+        Ok(if raw == 0xFFFF {
+            0
+        } else {
+            (5_400_000u32 / (raw as u32)) as u16
+        })
     }
 
     /// read_reg read a register value.
-    async fn read_reg<R: Into<u8>>(&mut self, reg: R) -> Result<u8, Error<E>> {
-        #[cfg(feature = "defmt")]
+    async fn read_reg<R: Into<u8>>(&mut self, reg: R) -> Result<u8, I::Error> {
         trace!("read_reg");
         let mut buf = [0x00];
         let reg = reg.into();
@@ -579,17 +569,14 @@ where
             .write_read(self.address, &[reg], &mut buf)
             .await
             .map_err(Error::I2c)?;
-        #[cfg(feature = "defmt")]
         debug!("R @0x{:x}={:x}", reg, buf[0]);
         Ok(buf[0])
     }
 
     /// write_reg blindly write a single register with a fixed value.
-    async fn write_reg<R: Into<u8>>(&mut self, reg: R, value: u8) -> Result<(), Error<E>> {
-        #[cfg(feature = "defmt")]
+    async fn write_reg<R: Into<u8>>(&mut self, reg: R, value: u8) -> Result<(), I::Error> {
         trace!("write_reg");
         let reg = reg.into();
-        #[cfg(feature = "defmt")]
         debug!("W @0x{:x}={:x}", reg, value);
         self.i2c
             .write(self.address, &[reg, value])
@@ -604,8 +591,7 @@ where
         reg: R,
         mask_set: u8,
         mask_clear: u8,
-    ) -> Result<(), Error<E>> {
-        #[cfg(feature = "defmt")]
+    ) -> Result<(), I::Error> {
         trace!("update_reg");
         let current = self.read_reg(reg.clone()).await?;
         let updated = current | mask_set & !mask_clear;
