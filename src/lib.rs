@@ -8,24 +8,25 @@ pub(crate) mod fmt;
 mod error;
 pub use error::{Error, Result};
 
-#[cfg(any(feature = "async", feature = "sync"))]
+#[cfg(not(any(feature = "sync", feature = "async")))]
+compile_error!("You should probably choose at least one of `sync` and `async` features.");
+
+#[cfg(feature = "sync")]
 use embedded_hal::i2c::ErrorType;
 #[cfg(feature = "sync")]
 use embedded_hal::i2c::I2c;
 #[cfg(feature = "async")]
+use embedded_hal_async::i2c::ErrorType as AsyncErrorType;
+#[cfg(feature = "async")]
 use embedded_hal_async::i2c::I2c as AsyncI2c;
 
-#[cfg(any(feature = "async", feature = "sync"))]
 use fugit::HertzU32;
-#[cfg(any(feature = "async", feature = "sync"))]
 use heapless::Vec;
 
 /// EMC2101 sensor's I2C address.
-pub const DEFAULT_ADDRESS: u8 = 0b0100_1100; // This is I2C address 0x4C;
+const DEFAULT_ADDRESS: u8 = 0b1001100; // This is I2C address 0x4C
 
-#[cfg(any(feature = "async", feature = "sync"))]
 const EMC2101_PRODUCT_ID: u8 = 0x16;
-#[cfg(any(feature = "async", feature = "sync"))]
 const EMC2101R_PRODUCT_ID: u8 = 0x28;
 
 /// EMC2101 sensor's Product.
@@ -152,10 +153,14 @@ pub struct AsyncEMC2101<I> {
 }
 
 #[maybe_async_cfg::maybe(
-    sync(feature = "sync", self = "EMC2101", idents(AsyncI2c(sync = "I2c"))),
+    sync(
+        feature = "sync",
+        self = "EMC2101",
+        idents(AsyncI2c(sync = "I2c"), AsyncErrorType(sync = "ErrorType"))
+    ),
     async(feature = "async", keep_self)
 )]
-impl<I: AsyncI2c + ErrorType> AsyncEMC2101<I> {
+impl<I: AsyncI2c + AsyncErrorType> AsyncEMC2101<I> {
     /// Initializes the EMC2101 driver.
     ///
     /// This consumes the I2C bus `I`. The address will almost always
@@ -609,5 +614,32 @@ impl<I: AsyncI2c + ErrorType> AsyncEMC2101<I> {
     /// Destroys this driver and releases the I2C bus `I`.
     pub fn destroy(self) -> Self {
         self
+    }
+}
+
+#[cfg(test)]
+mod test {
+    // extern crate alloc;
+    extern crate std;
+
+    use super::*;
+    use embedded_hal_mock::eh1::i2c;
+    use std::vec;
+
+    #[test]
+    fn new_emc2101() {
+        let expectations = [
+            i2c::Transaction::write_read(
+                DEFAULT_ADDRESS,
+                vec![Register::ProductID as u8],
+                vec![EMC2101_PRODUCT_ID],
+            ),
+            i2c::Transaction::write(DEFAULT_ADDRESS, vec![Register::AlertMask as u8, 0xFF]),
+        ];
+        let mock = i2c::Mock::new(&expectations);
+        let emc2101 = EMC2101::new(mock).unwrap();
+
+        let mut mock = emc2101.release();
+        mock.done();
     }
 }

@@ -1,7 +1,8 @@
 [package]
 authors = ["Georges Palauqui <g.palauqui@gptechinno.com>"]
 categories = ["embedded", "hardware-support", "no-std"]
-description = "Rust embedded-hal or embedded-hal-async driver for the EMC2101 temperature sensor and fan sensor/controler."
+description = "Platform-agnostic Rust driver for the EMC2101 temperature sensor and fan sensor/controler."
+documentation = "https://docs.rs/emc2101"
 edition = "2021"
 keywords = ["no-std", "embedded-hal-driver", "sensor", "temperature", "fan"]
 license = "MIT OR Apache-2.0"
@@ -12,7 +13,7 @@ version = "0.4.0"
 
 [dependencies]
 defmt = { version = "0.3", optional = true }
-embedded-hal = { version = "1.0" }
+embedded-hal = { version = "1.0", optional = true }
 embedded-hal-async = { version = "1.0", optional = true }
 fugit = "0.3"
 heapless = "0.8"
@@ -23,4 +24,9 @@ maybe-async-cfg = "0.2"
 async = ["dep:embedded-hal-async"]
 default = ["sync"]
 defmt-03 = ["dep:defmt", "fugit/defmt", "heapless/defmt-03"]
-sync = []
+sync = ["dep:embedded-hal"]
+
+[dev-dependencies]
+embedded-hal-mock = { version = "0.11.1", default-features = false, features = [
+  "eh1",
+] }
