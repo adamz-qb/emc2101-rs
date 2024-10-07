@@ -24,7 +24,7 @@ use fugit::HertzU32;
 use heapless::Vec;
 
 /// EMC2101 sensor's I2C address.
-const DEFAULT_ADDRESS: u8 = 0b1001100; // This is I2C address 0x4C
+pub const DEFAULT_ADDRESS: u8 = 0b1001100; // This is I2C address 0x4C
 
 const EMC2101_PRODUCT_ID: u8 = 0x16;
 const EMC2101R_PRODUCT_ID: u8 = 0x28;
