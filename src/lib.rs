@@ -138,6 +138,12 @@ pub struct Level {
     pub percent: u8,
 }
 
+
+enum OutputMode {
+    Dac,
+    Pwm { pwm_f: u8 }
+}
+
 /// An EMC2101 sensor on the I2C bus `I`.
 ///
 /// The address of the sensor will be `DEFAULT_ADDRESS` from this package,
@@ -150,6 +156,7 @@ pub struct AsyncEMC2101<I> {
     i2c: I,
     address: u8,
     variant: Option<Product>,
+    output_mode: OutputMode
 }
 
 #[maybe_async_cfg::maybe(
@@ -170,6 +177,7 @@ impl<I: AsyncI2c + AsyncErrorType> AsyncEMC2101<I> {
             i2c,
             address,
             variant: None,
+            output_mode: OutputMode::Pwm { pwm_f: 0x17 }
         };
         trace!("new");
         emc2101.variant = Some(emc2101.check_id().await?);
@@ -378,75 +386,50 @@ impl<I: AsyncI2c + AsyncErrorType> AsyncEMC2101<I> {
         inverted: bool,
     ) -> Result<&mut Self, I::Error> {
         trace!("set_fan_pwm");
-        match frequency.raw() {
-            1_400 => {
-                // Set FanConfig[3] CLK_SEL : The base clock that is used to determine the PWM
-                // frequency is 1.4kHz.
-                // Clear FanConfig[2] CLK_OVR : The base clock frequency is determined by the
-                // CLK_SEL bit.
-                if inverted {
-                    // Set FanConfig[4] POLARITY : The polarity of the Fan output driver is inverted.
-                    // A 0x00 setting will correspond to a 100% duty cycle or maximum DAC output voltage.
-                    self.update_reg(Register::FanConfig, 0b0001_1000, 0b0000_0100)
-                        .await?;
-                } else {
-                    // Clear FanConfig[4] POLARITY : The polarity of the Fan output driver is non-inverted.
-                    // A 0x00 setting will correspond to a 0% duty cycle or minimum DAC output voltage.
-                    self.update_reg(Register::FanConfig, 0b0000_1000, 0b0001_0100)
-                        .await?;
-                }
-            }
-            360_000 => {
-                // Clear FanConfig[3] CLK_SEL : The base clock that is used to determine the PWM
-                // frequency is 360kHz.
-                // Clear FanConfig[2] CLK_OVR : The base clock frequency is determined by the
-                // CLK_SEL bit.
-                if inverted {
-                    // Set FanConfig[4] POLARITY : The polarity of the Fan output driver is inverted.
-                    // A 0x00 setting will correspond to a 100% duty cycle or maximum DAC output voltage.
-                    self.update_reg(Register::FanConfig, 0b0001_0000, 0b0000_1100)
-                        .await?;
-                } else {
-                    // Clear FanConfig[4] POLARITY : The polarity of the Fan output driver is non-inverted.
-                    // A 0x00 setting will correspond to a 0% duty cycle or minimum DAC output voltage.
-                    self.update_reg(Register::FanConfig, 0, 0b0001_1100).await?;
-                }
-            }
-            23..=160_000 => {
+        let pwm_f = match frequency.raw() {
+            frequency @ 23..=180_000 => {
                 // Set FanConfig[2] CLK_OVR : The base clock that is used to determine the PWM frequency
                 // is set by the Frequency Divide Register.
                 if inverted {
                     // Set FanConfig[4] POLARITY : The polarity of the Fan output driver is inverted.
                     // A 0x00 setting will correspond to a 100% duty cycle or maximum DAC output voltage.
-                    self.update_reg(Register::FanConfig, 0b0001_0010, 0b0000_1000)
+                    self.update_reg(Register::FanConfig, 0b0001_0100, 0b0000_1000)
                         .await?;
                 } else {
                     // Clear FanConfig[4] POLARITY : The polarity of the Fan output driver is non-inverted.
                     // A 0x00 setting will correspond to a 0% duty cycle or minimum DAC output voltage.
-                    self.update_reg(Register::FanConfig, 0b0000_0010, 0b0001_1000)
+                    self.update_reg(Register::FanConfig, 0b0000_0100, 0b0001_1000)
                         .await?;
                 }
-                // The PWM frequency when the PWMFrequencyDivide Register is used is shown in equation :
-                // PWM_D = (360k / (2 * PWM_F * FREQ))
-                let div: u16 = (160_000u32 / frequency.raw()) as u16;
-                let pwm_f: u8 = (div >> 8) as u8 & 0x1F;
-                let pwm_d: u8 = (div & 0xFF) as u8;
+
+                // maximise PWM_D for max PWM_F resolution (PWM_F is limited to 0x1F)
+                let div = 360_000 / (2 * frequency);
+                let pwm_d = ((div + 0x1F - 1) / 0x1F) as u8; // integer divide + ceiling
+                let pwm_f = (div / pwm_d as u32) as u8;
+
                 // The PWMFrequency Register determines the final PWM frequency and "effective resolution"
                 // of the PWM driver.
                 self.write_reg(Register::PWMFrequency, pwm_f).await?;
+
                 // When the CLK_OVR bit is set to a logic '1', the PWMFrequencyDivide Register is used in
                 // conjunction with the PWMFrequency Register to determine the final PWM frequency that the
                 // load will see.
                 self.write_reg(Register::PWMFrequencyDivide, pwm_d).await?;
+
+                pwm_f
             }
             _ => {
                 error!("Invalid PWM Frequency.");
                 return Err(Error::InvalidValue);
             }
-        }
+        };
+
         // Clear Configuration[4] DAC : PWM output enabled at FAN pin.
         self.update_reg(Register::Configuration, 0, 0b0001_0000)
             .await?;
+
+        self.output_mode = OutputMode::Pwm { pwm_f };
+
         Ok(self)
     }
 
@@ -465,7 +448,28 @@ impl<I: AsyncI2c + AsyncErrorType> AsyncEMC2101<I> {
             // A 0x00 setting will correspond to a 0% duty cycle or minimum DAC output voltage.
             self.update_reg(Register::FanConfig, 0, 0b0001_0000).await?;
         }
+
+        self.output_mode = OutputMode::Dac;
+
         Ok(self)
+    }
+
+    /// Convert a fan speed percentage value into a fan setting value
+    /// that is appropriate for the current fan driver mode.
+    fn power_to_fan_speed(&self, percent: u8) -> u8 {
+        let val = match self.output_mode {
+            OutputMode::Dac => {
+                // see equation 5-3, pg. 35 of the datasheet
+                // note that Fan Setting is 5 bits (max 0x3F)
+                ((percent as u16) * 0x3F) / 100
+            },
+            OutputMode::Pwm { pwm_f } => {
+                // derived from equation 1, appendix B, pg. 47 of the datasheet.
+                ((percent as u16) * ((2 * pwm_f) as u16)) / 100
+            }
+        };
+
+        return val.try_into().expect("val");
     }
 
     /// set_fan_power set the FAN power in percent (for both modes PWM/DAC).
@@ -477,17 +481,12 @@ impl<I: AsyncI2c + AsyncErrorType> AsyncEMC2101<I> {
             error!("Invalid Fan Power.");
             return Err(Error::InvalidValue);
         }
-        let fan_config: u8 = self.read_reg(Register::FanConfig).await?;
-        // FanConfig[5] PROG == 0 :
-        // the FanSetting Register and Fan Control Look-Up Table Registers are read-only.
-        if fan_config & 0x20 == 0x00 {
-            // Set FanConfig[5] PROG : the FanSetting Register and Fan Control Look-Up
-            // Table Registers can be written and the Fan Control Look-Up Table Registers
-            // will not be used.
-            self.write_reg(Register::FanConfig, fan_config | 0x20)
-                .await?;
-        }
-        let val: u8 = percent * 64 / 100;
+
+        // Set FanConfig[5] PROG
+        self.update_reg(Register::FanConfig, 0b0010_0000, 0).await?;
+
+        let val = self.power_to_fan_speed(percent);
+
         // The FanSetting Register drives the fan driver when the Fan Control Look-Up
         // Table is not used.
         // Any data written to the FanSetting register is applied immediately to the
@@ -512,6 +511,7 @@ impl<I: AsyncI2c + AsyncErrorType> AsyncEMC2101<I> {
         if hysteresis > 31 {
             return Err(Error::InvalidValue);
         }
+
         let fan_config: u8 = self.read_reg(Register::FanConfig).await?;
         // FanConfig[5] PROG == 0 :
         // the FanSetting Register and Fan Control Look-Up Table Registers are read-only
@@ -523,6 +523,7 @@ impl<I: AsyncI2c + AsyncErrorType> AsyncEMC2101<I> {
             self.write_reg(Register::FanConfig, fan_config | 0x20)
                 .await?;
         }
+
         let mut last_temp: u8 = 0;
         for (index, level) in (0_u8..).zip(lut.iter()) {
             if level.temp > 127 {
@@ -537,18 +538,20 @@ impl<I: AsyncI2c + AsyncErrorType> AsyncEMC2101<I> {
             last_temp = level.temp;
             self.write_reg((Register::FanControlLUTT1 as u8) + 2 * index, level.temp)
                 .await?;
-            let power: u8 = level.percent * 64 / 100;
-            self.write_reg((Register::FanControlLUTS1 as u8) + 2 * index, power)
+            let speed: u8 = self.power_to_fan_speed(level.percent);
+            self.write_reg((Register::FanControlLUTS1 as u8) + 2 * index, speed)
                 .await?;
         }
         // FanControlLUTHysteresis determines the amount of hysteresis applied to the temperature
         // inputs of the fan control Fan Control Look-Up Table.
         self.write_reg(Register::FanControlLUTHysteresis, hysteresis)
             .await?;
+
         // Clear FanConfig[5] PROG : the FanSetting Register and Fan Control Look-Up Table
         // Registers are read-only and the Fan Control Look-Up Table Registers will be used.
-        self.write_reg(Register::FanConfig, fan_config | 0x20)
+        self.write_reg(Register::FanConfig, fan_config & 0xDF)
             .await?;
+
         Ok(self)
     }
 
@@ -599,7 +602,7 @@ impl<I: AsyncI2c + AsyncErrorType> AsyncEMC2101<I> {
     ) -> Result<(), I::Error> {
         trace!("update_reg");
         let current = self.read_reg(reg.clone()).await?;
-        let updated = current | mask_set & !mask_clear;
+        let updated = (current | mask_set) & !mask_clear;
         if current != updated {
             self.write_reg(reg, updated).await?;
         }
